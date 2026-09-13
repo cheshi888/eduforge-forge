@@ -174,3 +174,21 @@
 *.lz
 *.lzma
 *.iso
+
+# Next.js
+**/.next/
+**/.next/**
+apps/web/.env.local
+apps/web/.env.local.example
+
+# Rust build artifacts (keep .env.example tracked)
+apps/rust-core/target/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Secrets
+.env
+.env.local

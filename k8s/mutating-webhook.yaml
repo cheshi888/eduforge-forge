@@ -1,0 +1,129 @@
+# Sidecar 动态注入 Mutation Webhook 模板
+# Pod 创建时, 若 labels 命中 app=eduforge-* 且注解开启, 追加:
+#   1. otel-sidecar   : 采集 core 的 tracing / go-plugins 的 otel 导出
+#   2. hmac-gateway   : Envoy 入口, 为每个进入的网关回调计算
+#      X-Forge-Signature = hex(HMAC-SHA256(secret, raw_body)),
+#      即支付三道校验中的"第 0 道" (签名二次封装)。
+# 生产环境请配合 5 副本 + 证书轮换的 Admission Controller 部署。
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: eduforge-sidecar-injector
+webhooks:
+  - name: sidecar.eduforge.io
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: Ignore
+    matchPolicy: Exact
+    rules:
+      - operations: ["CREATE"]
+        apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["pods"]
+    namespaceSelector:
+      matchLabels:
+        eduforge.io/controlled: "true"
+    objectSelector:
+      matchExpressions:
+        - key: eduforge.io/inject-otel-sidecar
+          operator: In
+          values: ["true"]
+    clientConfig:
+      service:
+        name: eduforge-webhook
+        namespace: eduforge-system
+        path: /inject
+      caBundle: "" # 部署时填入 cert-manager 签发的 CA
+    # patchTemplate 声明注入内容: 匹配 Pod 时追加两个 Sidecar 容器
+    patchTemplate:
+      operation: add
+      path: /spec/containers/-
+      value:
+        name: otel-sidecar
+        image: otel/opentelemetry-collector-contrib:0.105.0
+        args: ["--config=/etc/otel/otel-config.yaml"]
+        env:
+          - name: OTEL_EXPORTER_OTLP_ENDPOINT
+            value: "http://otel-collector.eduforge-system.svc:4317"
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "300m"
+            memory: "256Mi"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: eduforge-hmac-injector
+webhooks:
+  - name: hmac.eduforge.io
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: Ignore
+    matchPolicy: Exact
+    rules:
+      - operations: ["CREATE"]
+        apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["pods"]
+    objectSelector:
+      matchExpressions:
+        - key: eduforge.io/inject-hmac-gateway
+          operator: In
+          values: ["true"]
+    clientConfig:
+      service:
+        name: eduforge-webhook
+        namespace: eduforge-system
+        path: /inject-hmac
+      caBundle: ""
+    # 入口 HMAC 接线说明 (修复"Envoy 段仅注释、未实际下发"缺口):
+    # patchTemplate 仅支持单条 JSONPatch 操作, 无法同时追加 container 与 volume,
+    # 故本 webhook 不设 patchTemplate, 由注入器服务 /inject-hmac 动态返回 2 条操作:
+    #   1. add /spec/containers/-  : hmac-gateway (Envoy, 18080, 配置挂 /etc/envoy/envoy.yaml)
+    #      image: envoyproxy/envoy:v1.31.0
+    #      args: [envoy, -c, /etc/envoy/envoy.yaml]
+    #      volumeMounts: [envoy-config -> /etc/envoy, hmac-secret -> /etc/forge/secret.b64]
+    #   2. add /spec/volumes/-  :
+    #      envoy-config: configMap eduforge-envoy-hmac (k8s/envoy-ingress-hmac.yaml, 部署前须渲染密钥占位符)
+    #      hmac-secret: secret eduforge-core key hmac-secret (供审计/轮换, Envoy 密钥走渲染后 ConfigMap)
+    # Envoy 配置 (lua 签名 filter + 18080->core:8080 路由) 见 k8s/envoy-ingress-hmac.yaml。
+    # 外部 Ingress/LB 上游必须指向 18080 (签名层), 集群内 /internal/* 直连 8080。
+    # 注入器未部署时 Pod 无签名 sidecar → 全部外部回调无签名头 → 后端 fail-closed 全拒, 不放行。
+---
+# 注入器 Service 参考 (业务侧不感知, 可随时摘除)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: eduforge-webhook
+  namespace: eduforge-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: eduforge-webhook
+  template:
+    metadata:
+      labels:
+        app: eduforge-webhook
+    spec:
+      containers:
+        - name: injector
+          image: registry.example.com/eduforge/webhook-injector:1.0.0
+          # 注入器逻辑: 读取 Pod 注解, 返回 JSONPatch
+          # 追加以下两个容器 (与 core 共享 Pod 网络命名空间):
+          #
+          # otel-sidecar:
+          #   image: otel/opentelemetry-collector-contrib:0.105.0
+          #   env: OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector.eduforge-system.svc:4317
+          #
+          # hmac-gateway (Envoy, 动态 2-op patch, 见上方 webhook 注释):
+          #   image: envoyproxy/envoy:v1.31.0
+          #   args: [envoy, -c, /etc/envoy/envoy.yaml]
+          #   配置源: configMap eduforge-envoy-hmac (k8s/envoy-ingress-hmac.yaml, 渲染后)
+          #   入口 18080 -> core:8080, lua filter 附加:
+          #   x-forge-signature = hex(HMAC-SHA256(FORGE_HMAC_SECRET, body))
+          ports:
+            - containerPort: 9443

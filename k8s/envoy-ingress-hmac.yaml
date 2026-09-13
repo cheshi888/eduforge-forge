@@ -1,0 +1,91 @@
+# hmac-gateway (Envoy) 入口签名配置 — k8s/mutating-webhook.yaml 注入的 sidecar 使用
+#
+# 职责: 为每个进入 Pod 的外部网关回调计算第 0 道校验
+#   X-Forge-Signature = hex(HMAC-SHA256(FORGE_HMAC_SECRET, raw_body))
+# 后端 (rust-core webhook.rs) 验签算法同式, 缺一即 400 "bad hmac" (fail-closed)。
+#
+# 部署前必须渲染占位符 (Secret 不得入库):
+#   1. 渲染 ConfigMap data.envoy.yaml 中的 __FORGE_HMAC_SECRET_B64__:
+#        kubectl get secret eduforge-core -o jsonpath='{.data.hmac-secret}' \
+#          | base64 -d | base64 -w0  # 得到密钥的 b64 形式
+#        envsubst -w 替换占位符后 apply; CI 流水线执行, 渲染产物不提交仓库
+#   2. 占位符未渲染时 Envoy lua 初始化失败 → 全部回调 5xx 拒绝 (fail-closed, 不放行未签名流量)
+#
+# 流量路径: 公网网关回调 → Ingress/LB → Pod:18080 (Envoy 签名) → core:8080
+#   集群内 /internal/* 流量直连 8080 (Service 保持 targetPort 8080 不变), 不经过签名层;
+#   外部 Ingress 上游必须指向 18080 而非 8080, 否则回调无签名头 → 后端全拒。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: eduforge-envoy-hmac
+  namespace: eduforge-system
+data:
+  envoy.yaml: |
+    static_resources:
+      listeners:
+        - name: ingress_hmac
+          address:
+            socket_address: { address: 0.0.0.0, port_value: 18080 }
+          filter_chains:
+            - filters:
+                - name: envoy.filters.network.http_connection_manager
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                    stat_prefix: ingress_hmac
+                    codec_type: AUTO
+                     route_config:
+                       name: local_route
+                       virtual_hosts:
+                         - name: core
+                           domains: ["*"]
+                           routes:
+                             # H2-03: 仅转发网关回调前缀. 全路径转发会把 /internal/* (订单预览/结算)
+                             # 暴露到集群外 — 外部经 18080 可越权读任意用户 PENDING 订单。
+                             - match: { prefix: "/webhooks/" }
+                               route:
+                                 cluster: core
+                                 timeout: 30s
+                    http_filters:
+                      # 缓冲完整请求体, 供 lua 计算 HMAC (webhook 体 < 1MiB)
+                      - name: envoy.filters.http.buffer
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.buffer.v3.BufferPolicy
+                          maximum_request_bytes: 1048576
+                      - name: envoy.filters.http.lua
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+                          inline_code: |
+                            local hmac = require "crypto.hmac"
+                            local b64 = require "crypto.base64"
+                            local function hexdigest(bin)
+                              local parts = {}
+                              for i = 1, #bin do
+                                parts[i] = string.format("%02x", string.byte(bin:sub(i, i)))
+                              end
+                              return table.concat(parts)
+                            end
+                            -- 密钥在 bootstrap 期渲染自 eduforge-core/hmac-secret; 未渲染则解码失败 → 全部请求 5xx (fail-closed)
+                            local key = b64.decode("__FORGE_HMAC_SECRET_B64__")
+                            assert(key, "hmac secret b64 not rendered")
+                            function handle_request(request)
+                              local body = request:getRequestBody()
+                              local sig = hexdigest(hmac(key, body, "sha256"))
+                              request:addRequestHeader("x-forge-signature", sig)
+                            end
+                      - name: envoy.filters.http.router
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+      clusters:
+        - name: core
+          type: STRICT_DNS
+          connect_timeout: 5s
+          lb_policy: ROUND_ROBIN
+          load_assignment:
+            cluster_name: core
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address:
+                          address: eduforge-core.eduforge.svc
+                          port_value: 8080

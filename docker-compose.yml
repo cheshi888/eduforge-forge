@@ -1,0 +1,71 @@
+# EduForge-Neo 基础设施栈
+# 用法: docker compose up -d  然后  psql -h 127.0.0.1 -U eduforge -d eduforge -f schema/001_init.sql
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: eduforge-postgres
+    environment:
+      POSTGRES_DB: eduforge
+      POSTGRES_USER: eduforge
+      POSTGRES_PASSWORD: eduforge_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eduforge"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    container_name: eduforge-redis
+    # Redlock 防并发超卖依赖此实例; 生产环境建议 5 节点 Redlock 集群或独立锁服务
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  nats:
+    image: nats:2.10-alpine
+    container_name: eduforge-nats
+    # JetStream 开启: 支付回调可靠重试 + 死信 (DURABLE consumer)
+    command: ["-p", "4222", "-m", "8222", "-js", "-sd", "/data"]
+    ports:
+      - "4222:4222"   # client
+      - "8222:8222"   # monitoring
+    volumes:
+      - natsdata:/data
+    healthcheck:
+      test: ["CMD", "nats-server", "--ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  minio:
+    image: minio/minio:latest
+    container_name: eduforge-minio
+    # 课程视频切片 / 源码交付包 / 插件二进制均存于此, 下载走预签名 URL (5 分钟有效)
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: eduforge
+      MINIO_ROOT_PASSWORD: eduforge_dev
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Console
+    volumes:
+      - miniodata:/data
+
+volumes:
+  pgdata:
+  redisdata:
+  natsdata:
+  miniodata:

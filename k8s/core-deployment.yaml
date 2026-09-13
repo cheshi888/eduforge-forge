@@ -1,0 +1,159 @@
+# EduForge-Neo Rust Core Deployment (基线 Pod)
+# 基线 Pod 只跑 core 容器; otel-sidecar 与 hmac-gateway 由
+# k8s/mutating-webhook.yaml 的 Mutation 规则动态注入, 业务侧零改动。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: eduforge-core
+  labels:
+    app: eduforge-core
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: eduforge-core
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: eduforge-core
+      annotations:
+        # 注入开关: webhook 匹配 label + 该注解后才追加 Sidecar
+        eduforge.io/inject-otel-sidecar: "true"
+        eduforge.io/inject-hmac-gateway: "true"
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: core
+          image: registry.example.com/eduforge/rust-core:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: FORGE_BIND_ADDR
+              value: "0.0.0.0:8080"
+            - name: FORGE_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: eduforge-core
+                  key: database-url
+            - name: FORGE_NATS_URL
+              value: "nats://nats.eduforge.svc:4222"
+            - name: FORGE_HMAC_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: eduforge-core
+                  key: hmac-secret
+            - name: FORGE_ALIPAY_PUBLIC_KEY_PEM
+              valueFrom:
+                secretKeyRef:
+                  name: eduforge-gateways
+                  key: alipay-public-key
+            - name: FORGE_STRIPE_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: eduforge-gateways
+                  key: stripe-webhook-secret
+            - name: FORGE_COINBASE_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: eduforge-gateways
+                  key: coinbase-webhook-secret
+            # H2-02: 补齐 wechat/卡收单/adyen 槽位 env — 缺失时对应通道 fail-closed 恒拒 (安全默认,
+            # 但未配置 = 通道不可用, 不应成为部署盲区); 全部 optional, 保持 fail-closed 语义
+            - name: FORGE_WECHAT_PLATFORM_CERT_PEM
+              valueFrom:
+                secretKeyRef:
+                  name: eduforge-gateways
+                  key: wechat-platform-cert
+                  optional: true
+              defaultValue: ""
+            - name: FORGE_WECHAT_API_V3_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: eduforge-gateways
+                  key: wechat-api-v3-key
+                  optional: true
+              defaultValue: ""
+            - name: FORGE_BRAINTREE_MERCHANT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: eduforge-gateways
+                  key: braintree-merchant-id
+                  optional: true
+              defaultValue: ""
+            # 卡收单槽位开关: braintree | adyen (缺省 braintree)
+            - name: FORGE_CARD_ACQUIRER
+              valueFrom:
+                secretKeyRef:
+                  name: eduforge-gateways
+                  key: card-acquirer
+                  optional: true
+              defaultValue: "braintree"
+            - name: FORGE_ADYEN_HMAC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: eduforge-gateways
+                  key: adyen-hmac-key
+                  optional: true
+              defaultValue: ""
+            - name: FORGE_ADYEN_MERCHANT_ACCOUNT
+              valueFrom:
+                secretKeyRef:
+                  name: eduforge-gateways
+                  key: adyen-merchant-account
+                  optional: true
+              defaultValue: ""
+            # 卡收单槽位 Braintree Webhook 密钥: 未配置时该槽位验签 fail-closed
+            - name: FORGE_BRAINTREE_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: eduforge-gateways
+                  key: braintree-webhook-secret
+                  optional: true
+              defaultValue: ""
+            # PayPal Webhook 签名密钥: 未配置时 /webhooks/paypal 验签 fail-closed
+            - name: FORGE_PAYPAL_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: eduforge-gateways
+                  key: paypal-webhook-secret
+                  optional: true
+              defaultValue: ""
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "512Mi"
+          readinessProbe:
+            # M2-08: readiness 探 DB+NATS (/readyz), 故障时摘流量; liveness 仅进程存活
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: eduforge-core
+spec:
+  selector:
+    app: eduforge-core
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
