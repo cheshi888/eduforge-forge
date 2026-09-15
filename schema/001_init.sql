@@ -30,7 +30,7 @@ CREATE TABLE orders (
     product_id                 BIGINT       NOT NULL REFERENCES products(id),
     quantity                     INT          NOT NULL CHECK (quantity > 0),
     expected_amount            NUMERIC(20,6) NOT NULL CHECK (expected_amount > 0),
-    currency                   CHAR(3)      NOT NULL DEFAULT 'CNY',
+    currency                   VARCHAR(8)   NOT NULL DEFAULT 'CNY',
     paid_amount                NUMERIC(20,6),
     status                     VARCHAR(24)  NOT NULL DEFAULT 'PENDING'
         CHECK (status IN ('PENDING','PAID','PENDING_BALANCE','SHIPPED','FRAUD_SUSPENDED','REFUNDED','CANCELLED')),
@@ -54,7 +54,7 @@ CREATE TABLE payment_transactions (
     gateway_type       VARCHAR(24)  NOT NULL,      -- alipay / wechat / stripe / paypal / coinbase
     out_trade_no       VARCHAR(64)  NOT NULL,
     amount             NUMERIC(20,6) NOT NULL,
-    currency           CHAR(3)      NOT NULL,
+    currency           VARCHAR(8)   NOT NULL,
     confirmations      INT,                        -- Crypto 链上确认数
     status             VARCHAR(24)  NOT NULL DEFAULT 'RECEIVED'
         CHECK (status IN ('RECEIVED','MISMATCH','CURRENCY_MISMATCH','DUPLICATE','SETTLED','REJECTED')),

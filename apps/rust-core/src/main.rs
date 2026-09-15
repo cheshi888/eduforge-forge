@@ -18,6 +18,8 @@ pub struct AppState {
     pub pool: sqlx::PgPool,
     pub events: std::sync::Arc<events::EventPublisher>,
     pub cfg: config::Config,
+    // 交付文件本地存储根目录 (上传/下载接线); 缺省 <cwd>/uploads
+    pub uploads_dir: Option<std::path::PathBuf>,
 }
 
 // M2-08: 就绪探针 — DB + NATS 双依赖探活; K8s readiness 打 /readyz,
@@ -68,10 +70,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    let uploads_dir = std::env::var("FORGE_UPLOADS_DIR")
+        .ok()
+        .map(std::path::PathBuf::from);
     let state = AppState {
         pool,
         events: events.clone(),
         cfg,
+        uploads_dir,
     };
 
     consumer::EventConsumer::new(

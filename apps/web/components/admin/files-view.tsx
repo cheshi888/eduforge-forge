@@ -23,6 +23,7 @@ export function AdminFilesView() {
   const [fileName, setFileName] = useState("");
   const [storageKey, setStorageKey] = useState("");
   const [sizeBytes, setSizeBytes] = useState("");
+  const [localFile, setLocalFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
@@ -46,7 +47,43 @@ export function AdminFilesView() {
 
   const upload = async () => {
     const pid = Number(productId);
-    if (!pid || !fileName.trim() || !storageKey.trim()) return;
+    if (!pid) return;
+
+    // 本地文件路径: 选了本地文件则自动填充 fileName + size, 跳过 storageKey 必填
+    if (localFile) {
+      setBusy(true);
+      setMsg(null);
+      try {
+        // 二进制安全的 base64: 走 ArrayBuffer + 手写编码, 避免 text() 对 zip/pdf 等有损解码
+        const buf = await localFile.arrayBuffer();
+        const bytes = new Uint8Array(buf);
+        let bin = "";
+        const CHUNK = 0x8000;
+        for (let i = 0; i < bytes.length; i += CHUNK) {
+          bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+        }
+        const b64 = btoa(bin);
+        await adminUploadFileMeta({
+          productId: pid,
+          fileName: localFile.name,
+          storageKey: undefined,
+          content: b64,
+          sizeBytes: localFile.size,
+          mimeType: localFile.type || undefined
+        });
+        setMsg(t("filesUploaded"));
+        setLocalFile(null);
+        await load();
+      } catch (e) {
+        setMsg((e as AdminApiError | Error).message);
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+
+    // 手填 storageKey 路径 (对象存储)
+    if (!fileName.trim() || !storageKey.trim()) return;
     setBusy(true);
     setMsg(null);
     try {
@@ -65,6 +102,15 @@ export function AdminFilesView() {
       setMsg((e as AdminApiError | Error).message);
     } finally {
       setBusy(false);
+    }
+  };
+
+  const onFilePick = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (f) {
+      setLocalFile(f);
+      setFileName(f.name);
+      setSizeBytes(String(f.size));
     }
   };
 
@@ -98,20 +144,36 @@ export function AdminFilesView() {
               </div>
               <div>
                 <label className="mb-1 block text-[11px] text-zinc-500">{t("fileName")}</label>
-                <input
-                  value={fileName}
-                  onChange={(e) => setFileName(e.target.value)}
-                  placeholder="tutorial-react.zip"
-                  className={FIELD}
-                />
+                <div className="flex gap-2">
+                  <input
+                    value={fileName}
+                    onChange={(e) => setFileName(e.target.value)}
+                    placeholder="tutorial-react.zip"
+                    className={FIELD}
+                  />
+                  <input
+                    type="file"
+                    accept=".zip,.tar,.gz,.tgz,.rar,.7z,.pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.gif,.webp,.mp4,.mov,.avi,.mkv,.webm,.mp3,.wav,.ogg,.flac,.ttf,.otf,.woff,.woff2,.json,.yaml,.yml,.xml,.csv,.py,.ts,.js,.tsx,.jsx,.go,.rs,.java,.c,.cpp,.h,.html,.css,.sh,.sql,.env,.md,.txt"
+                    onChange={onFilePick}
+                    className="hidden"
+                    id="local-file-input"
+                  />
+                  <label
+                    htmlFor="local-file-input"
+                    className="cursor-pointer rounded-lg border border-zinc-700/70 bg-zinc-900/50 px-3 py-1.5 text-[11px] text-zinc-300 transition hover:border-indigo-500/50"
+                  >
+                    {localFile ? "✓ 已选" : "选择文件…"}
+                  </label>
+                </div>
               </div>
               <div>
                 <label className="mb-1 block text-[11px] text-zinc-500">{t("storageKey")}</label>
                 <input
                   value={storageKey}
                   onChange={(e) => setStorageKey(e.target.value)}
-                  placeholder="s3://bucket/products/12/tutorial-react.zip"
-                  className={FIELD}
+                  placeholder={localFile ? "(本地文件自动填充)" : "s3://bucket/products/12/tutorial-react.zip"}
+                  disabled={!!localFile}
+                  className={`${FIELD} disabled:cursor-not-allowed disabled:opacity-50`}
                 />
               </div>
               <div>
@@ -127,12 +189,25 @@ export function AdminFilesView() {
               <div className="flex items-center gap-3 sm:col-span-2">
                 <button
                   type="button"
-                  disabled={busy || !productId || !fileName.trim() || !storageKey.trim()}
+                  disabled={busy || !productId || (!localFile && (!fileName.trim() || !storageKey.trim()))}
                   onClick={() => void upload()}
                   className="rounded-lg border border-indigo-500/50 bg-gradient-to-r from-indigo-500/25 to-purple-500/25 px-4 py-2 text-xs font-semibold text-indigo-200 transition hover:from-indigo-500/40 hover:to-purple-500/40 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {busy ? t("uploading") : t("upload")}
                 </button>
+                {localFile && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLocalFile(null);
+                      setStorageKey("");
+                      document.getElementById("local-file-input")?.click();
+                    }}
+                    className="text-[11px] text-zinc-500 transition hover:text-zinc-300"
+                  >
+                    清除本地文件
+                  </button>
+                )}
                 {msg && (
                   <span className={`text-[11px] ${msg === t("filesUploaded") ? "text-emerald-400" : "text-rose-400"}`}>
                     {msg}

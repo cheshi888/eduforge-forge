@@ -1,11 +1,12 @@
 "use client";
 
-import { useMemo, useState, useActionState } from "react";
+import { useMemo, useState, useActionState, useEffect } from "react";
 import { useTranslations } from "next-intl";
 import { createOrder, type CheckoutState } from "@/app/actions/checkout";
 import { formatMicro, lockedUsd, FX_METHODS, type PaymentMethod } from "@/lib/amount";
 import type { OrderSummary } from "@/lib/api";
 import type { Product } from "@/lib/products";
+import { fetchProfile, type UserTier } from "@/lib/membership-api";
 
 const METHODS: { key: PaymentMethod; icon: string }[] = [
   { key: "alipay", icon: "¥" },
@@ -40,12 +41,30 @@ export function CheckoutForm({
     createOrder,
     null
   );
+  // 会员折扣: 拉取当前用户等级, 展示 discountPct 权益
+  const [member, setMember] = useState<UserTier | null>(null);
+  useEffect(() => {
+    fetchProfile()
+      .then(setMember)
+      .catch(() => setMember(null));
+  }, []);
 
   const currency = FX_METHODS.includes(method) ? "USD" : order.currency;
   const totalDisplay = useMemo(
     () => formatMicro(order.amountMicro, locale, currency),
     [order.amountMicro, locale, currency]
   );
+  // 会员折扣后金额: 整数微单位 * (100 - pct) / 100, 无浮点
+  const discountedMicro = useMemo(() => {
+    const pct = member?.discountPct ?? 0;
+    if (pct <= 0 || pct >= 100) return order.amountMicro;
+    return Math.round((order.amountMicro * (100 - pct)) / 100);
+  }, [order.amountMicro, member]);
+  const discountedDisplay = useMemo(
+    () => formatMicro(discountedMicro, locale, currency),
+    [discountedMicro, locale, currency]
+  );
+  const hasDiscount = (member?.discountPct ?? 0) > 0;
   const rateDisplay = useMemo(
     () =>
       order.lockedRateUsd
@@ -116,6 +135,14 @@ export function CheckoutForm({
             <dt className="text-sm text-zinc-400">{t("total")}</dt>
             <dd className="text-xl font-bold tracking-tight text-zinc-100">{totalDisplay}</dd>
           </div>
+          {hasDiscount ? (
+            <div className="flex items-baseline justify-between text-xs">
+              <dt className="text-indigo-400">
+                {t("memberDiscount")} ({member!.tierCode} · {member!.discountPct}%)
+              </dt>
+              <dd className="font-mono font-semibold text-emerald-400">{discountedDisplay}</dd>
+            </div>
+          ) : null}
           {rateDisplay ? (
             <div className="flex justify-between text-xs text-amber-500/80">
               <dt>{t("lockedRate")}</dt>

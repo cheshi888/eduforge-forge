@@ -105,3 +105,14 @@ Entries discovered by the Agent during task execution should follow this format:
   - `scripts/e2e-webhook.sh` 一键复现 live TC-03/04/05/11/12/13: docker compose 起 pg/redis/nats/minio → psql 建 schema + seed (时间戳唯一行, 可重跑) → 本地生成 alipay RSA 密钥对 (签法与 cargo test alipay 一致, 无需网关沙箱凭据) → 每个 /webhooks 请求带入口 HMAC 头 x-forge-signature
   - 运行前置: docker + psql + curl + openssl + python3 + cargo; JetStream 无流定义时 publish 失败, 脚本会先经 NATS 监控口 8222 创建 eduforge-events 流 (subjects: orders.events.>/fraud.events.>/crypto.events.>), fraud 告警断言按消息数增量 (≥3: 1 paid + 2 fraud)
   - 本机无 docker, 该脚本仅静态校验 (bash -n), 实跑留给有 docker 的机器; 报告 §8.3/§8.4 与下一步建议第 5 条已指向该脚本
+
+[Project Knowledge Summary]
+- Date: 2026-09-13
+- Context: Discovered by Agent while running full e2e on the EduForge deliverables-file upload/download feature (Docker deps + Next.js proxy)
+- Category: Troubleshooting & Debugging
+- Instructions:
+  - axum 0.7.x 路由模板路径参数用 `:param` 旧语法 (底层 matchit 0.7.3), 写 `{param}` 会静默不匹配落入 404 fallback; 全仓统一 `:param`
+  - sqlx 严格类型映射: DB `smallint`/`int2` 列 (membership_tiers.discount_pct/max_downloads) 对应 Rust `i16`, 写成 `i32` 会 decode 报 "mismatched types" 500; 派生表 JOIN 外层引用子查询未 SELECT 的列 (如 `u.id`) 会 "column does not exist"
+  - 单端口预览下浏览器无法直连后端 8080: 前端 `next.config.ts` 用 `rewrites` 把 `/api/:path*` 反代到后端 (server-side, 目标读 `FORGE_API_PROXY_TARGET` 缺省 `http://127.0.0.1:8080`), 4 处 `API_BASE` 一律同源 `"/api"`, 免 CORS
+  - 客户端 bundle 只内联 `NEXT_PUBLIC_*` 前缀环境变量: admin token 用 `NEXT_PUBLIC_FORGE_ADMIN_TOKEN`, 无前缀变量在客户端为 undefined → 空 Bearer → 401
+  - 本机 docker compose 已起 postgres/nats 两容器 (镜像走 DaoCloud 加速), rust-core `.env` 配 FORGE_ADMIN_TOKEN=dev-admin-token-2026; 交付文件落盘 `uploads/{pid}/`, 登记 `local://` 前缀 storage_key, 下载 handler 按 `local://` 剥离前缀读本地文件

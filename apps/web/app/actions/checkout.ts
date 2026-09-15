@@ -4,7 +4,7 @@ import { resolveUid } from "@/lib/api";
 
 // 结算表单 Server Action: 组装下单请求, 由 Rust Core 统一落库
 // (expected_amount 在此刻锁定, 后续网关回调只做本地比对)。
-const API_BASE = process.env.FORGE_API_BASE ?? "http://127.0.0.1:8080";
+const API_BASE = "/api";
 
 export interface CheckoutState {
   ok: boolean;

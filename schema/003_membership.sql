@@ -10,7 +10,7 @@ CREATE TABLE membership_tiers (
         CHECK (code IN ('free','plus','pro')),
     name         VARCHAR(32)  NOT NULL,
     price_micro  NUMERIC(20,6) NOT NULL CHECK (price_micro >= 0),  -- 0 = free
-    currency     CHAR(3)      NOT NULL DEFAULT 'CNY',
+    currency     VARCHAR(8)   NOT NULL DEFAULT 'CNY',
     duration_days INT         NOT NULL DEFAULT 365,
     discount_pct  SMALLINT    NOT NULL DEFAULT 0
         CHECK (discount_pct BETWEEN 0 AND 100),                    -- 会员购买非会员专享商品的折扣

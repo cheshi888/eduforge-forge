@@ -184,6 +184,9 @@ apps/web/.env.local.example
 # Rust build artifacts (keep .env.example tracked)
 apps/rust-core/target/
 
+# Rust runtime uploads
+apps/rust-core/uploads/
+
 # Python
 __pycache__/
 *.pyc

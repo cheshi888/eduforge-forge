@@ -137,14 +137,14 @@ export function ProductsView() {
       {error ? (
         <ErrorBox error={error} onRetry={() => void load()} />
       ) : (
-        <Card
-          title={t("productsTitle")}
-          actions={
-            <button type="button" onClick={openCreate} className={GHOST}>
-              + {t("newProduct")}
-            </button>
-          }
-        >
+          <Card
+            title={t("productsTitle")}
+            actions={
+              <button type="button" onClick={openCreate} className={GHOST}>
+                + {t("newProduct")}
+              </button>
+            }
+          >
           {loading ? (
             <Skeleton rows={6} />
           ) : products && products.length > 0 ? (
@@ -157,6 +157,7 @@ export function ProductsView() {
                     <th className="px-3 py-2.5 font-medium">{t("th.category")}</th>
                     <th className="px-3 py-2.5 font-medium">{t("th.price")}</th>
                     <th className="px-3 py-2.5 font-medium">{t("th.stock")}</th>
+                    <th className="px-3 py-2.5 font-medium">{t("th.files")}</th>
                     <th className="px-3 py-2.5 font-medium">{t("th.active")}</th>
                     <th className="px-5 py-2.5 text-right font-medium">{t("actions")}</th>
                   </tr>
@@ -196,19 +197,22 @@ export function ProductsView() {
                           </button>
                         </div>
                       </td>
+                      <td className="px-3 py-3 font-mono text-[11px] text-zinc-500">
+                        {p.uploadedFilesCount ?? "—"}
+                      </td>
                       <td className="px-3 py-3 text-zinc-500">
                         {p.active ? t("yes") : t("no")}
                       </td>
                       <td className="px-5 py-3 text-right">
                         <div className="flex justify-end gap-2">
-                          <button
-                            type="button"
-                            disabled={stockBusy !== null}
-                            onClick={() => openEdit(p)}
-                            className={GHOST}
-                          >
-                            {t("edit")}
-                          </button>
+                        <button
+                          type="button"
+                          disabled={stockBusy !== null}
+                          onClick={() => openEdit(p)}
+                          className={GHOST}
+                        >
+                          {t("edit")}
+                        </button>
                           <button
                             type="button"
                             disabled={stockBusy !== null}
@@ -217,23 +221,23 @@ export function ProductsView() {
                           >
                             {t("delete")}
                           </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <EmptyState>{t("noProducts")}</EmptyState>
-          )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <EmptyState>{t("noProducts")}</EmptyState>
+        )}
+      </Card>
+      )}
 
-          {actionErr && (
-            <div className="border-t border-zinc-800/80 px-5 py-3 text-[11px] text-rose-400">
-              {actionErr}
-            </div>
-          )}
-        </Card>
+      {actionErr && (
+        <div className="mt-2 rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-[11px] text-rose-400">
+          {actionErr}
+        </div>
       )}
 
       {form && (

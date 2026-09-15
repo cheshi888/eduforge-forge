@@ -139,12 +139,53 @@ assert_eq "$(echo "$STATS" | python3 -c 'import sys,json;d=json.load(sys.stdin);
 # 交叉校验 availableCardKeys
 assert_eq "$($PSQL -c "SELECT count(*) FROM card_keys WHERE status='AVAILABLE'")" "$(echo "$STATS" | python3 -c 'import sys,json;print(json.load(sys.stdin)["availableCardKeys"])')" "availableCardKeys 与 SQL 一致"
 
+# ---------- §5.9 会员等级 + 内容交付 + 文件下载 ----------
+# 前置: schema 003_membership.sql 已应用
+if [ "$($PSQL -c "SELECT count(*) FROM membership_tiers")" -eq 0 ] 2>/dev/null; then
+  echo "--- 9. [SKIP] membership_tiers 空 — 未应用 schema/003_membership.sql, 跳过 §5.9 ---"
+else
+  # ---------- 9. 等级列表 ----------
+  echo "--- 9. 等级列表 /user/tier ---"
+  assert_eq "$(curl -s "$BASE/user/tier" | python3 -c 'import sys,json;print(len(json.load(sys.stdin)))')" "3" "tiers 3 档 (free/plus/pro)"
+  assert_eq "$(curl -s "$BASE/user/tier" | python3 -c 'import sys,json;d=json.load(sys.stdin);print(any(t.get("maxDownloads") is not None for t in d))')" "True" "tiers 含 maxDownloads 字段"
+
+  # ---------- 10. 升级 + 降级拒绝 ----------
+  echo "--- 10. 升级/降级 (等级状态机) ---"
+  MUID=$($PSQL -c "SELECT uid FROM users LIMIT 1")
+  if [ -z "$MUID" ]; then MUID="u-member-live"; $PSQL -c "INSERT INTO users (uid,email) VALUES ('$MUID','$MUID@live.test') ON CONFLICT (uid) DO NOTHING" >/dev/null; fi
+  # 先重置为 free 保证可升级
+  $PSQL -c "UPDATE users SET tier_code='free' WHERE uid='$MUID'" >/dev/null
+  assert_eq "$(curl -s -X POST -H 'Content-Type: application/json' -d "{\"uid\":\"$MUID\",\"tier_code\":\"plus\"}" "$BASE/user/profile" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("tierCode"))')" "plus" "free→plus 升级成功"
+  assert_eq "$($PSQL -c "SELECT tier_code FROM users WHERE uid='$MUID'")" "plus" "SQL tier_code=plus"
+  assert_eq "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d "{\"uid\":\"$MUID\",\"tier_code\":\"free\"}" "$BASE/user/profile")" "400" "降级 plus→free 返 400 (状态机拒绝)"
+
+  # ---------- 11. 交付物 + 下载额度 ----------
+  echo "--- 11. 交付物 + 下载额度 ---"
+  # 造一条 content 交付物 (user 已购), 验证列表 + 下载计数
+  MPID=$($PSQL -c "SELECT product_id FROM orders WHERE status='SHIPPED' AND user_id=$UIDLIVE LIMIT 1")
+  if [ -z "$MPID" ]; then MPID=$CID_CARD; fi
+  DID=$($PSQL -c "INSERT INTO product_deliveries (user_id,product_id,delivery_type,product_sku,product_title,product_category)
+        VALUES ($UIDLIVE,$MPID,'content','LIVE-RES-01','测试内容','resource') RETURNING id")
+  assert_eq "$($PSQL -c "SELECT count(*) FROM product_deliveries WHERE id=$DID")" "1" "content 交付物落库"
+  assert_eq "$(curl -s "$BASE/user/deliveries?uid=$MUID" | python3 -c 'import sys,json;print(any(d["deliveryType"]=="content" for d in json.load(sys.stdin)))')" "True" "deliveries 列表含 content"
+  assert_eq "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/user/deliveries/$DID/download?uid=$MUID")" "200" "download 200 (plus 档有额度)"
+  assert_eq "$($PSQL -c "SELECT download_count FROM product_deliveries WHERE id=$DID")" "1" "download_count +1"
+
+  # ---------- 12. admin 上传文件登记 + 设等级 ----------
+  echo "--- 12. admin 上传登记 + 设等级 ---"
+  UPID=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+    -d "{\"product_id\":$MPID,\"file_name\":\"src.zip\",\"storage_key\":\"local://uploads/1/src.zip\",\"size_bytes\":1024}" "$BASE/admin/deliveries/files")
+  assert_eq "$UPID" "201" "admin 上传登记 201"
+  assert_eq "$($PSQL -c "SELECT count(*) FROM uploaded_files WHERE product_id=$MPID AND file_name='src.zip'")" "1" "uploaded_files 落库"
+  assert_eq "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' -d "{\"uid\":\"$MUID\",\"tier_code\":\"free\"}" "$BASE/admin/users/$MUID/tier")" "200" "admin 设等级 (降级通道) 200"
+fi
+
 # ---------- 汇总 ----------
 echo "==================================="
-echo "§5.7 live 结果: PASS=$PASS FAIL=$FAIL"
+echo "§5.7+§5.9 live 结果: PASS=$PASS FAIL=$FAIL"
 if [ "$FAIL" -eq 0 ]; then
-  echo "🎉 全部通过 — 把 §5.6 的 7 个 ⏳ 项改为 ✅, 并回填 CODE_REVIEW §11 C4-01"
+  echo "🎉 全部通过 — 把 §5.6/§5.8 的 ⏳ 项改为 ✅, 并回填 CODE_REVIEW §11 C4-01 / §11.2 C5-01"
 else
-  echo "存在失败, 对照上方 FAIL 行定位; DB 回滚语义不符记入 §11 C4-01 复测"
+  echo "存在失败, 对照上方 FAIL 行定位; DB 回滚/等级/额度语义不符记入 §11 复测"
 fi
 [ "$FAIL" -eq 0 ]

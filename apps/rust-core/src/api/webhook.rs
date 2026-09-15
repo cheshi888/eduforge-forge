@@ -106,6 +106,14 @@ async fn process_transaction(
         }
     };
 
+    let cb_amount: Decimal = match Decimal::from_str(&txn.amount) {
+        Ok(d) => d,
+        Err(e) => {
+            error!(%e, "callback amount unparseable as Decimal");
+            return ProcessOutcome::Failed;
+        }
+    };
+
     // !!! CRITICAL: 幂等性校验 (三道死锁之第 3 道) !!!
     // (gateway_txn_id + gateway_type) 联合唯一索引是防重放攻击的终极防线。
     // ON CONFLICT DO NOTHING 原子认领: 影响行数为 0 即该网关流水已入库,
@@ -114,12 +122,12 @@ async fn process_transaction(
         r"INSERT INTO payment_transactions
             (gateway_txn_id, gateway_type, out_trade_no, amount, currency, confirmations, raw_payload, status)
            VALUES ($1, $2, $3, $4, $5, $6, $7, 'RECEIVED')
-           ON CONFLICT (gateway_txn_id, gateway_type) DO NOTHING",
+            ON CONFLICT (gateway_txn_id, gateway_type) DO NOTHING",
     )
     .bind(&txn.gateway_txn_id)
     .bind(gateway.as_db_value())
     .bind(&txn.out_trade_no)
-    .bind(&txn.amount)
+    .bind(&cb_amount)
     .bind(&txn.currency)
     .bind(txn.confirmations)
     .bind(txn.raw.clone())
@@ -190,20 +198,7 @@ async fn process_transaction(
         }
     };
 
-    let cb_amount: Decimal = match Decimal::from_str(&txn.amount) {
-        Ok(d) => d,
-        Err(e) => {
-            error!(%e, "callback amount unparseable as Decimal");
-            mark_txn(&mut db, gateway, "REJECTED", txn).await;
-            let _ = db.commit().await;
-            return ProcessOutcome::FraudSuspended;
-        }
-    };
-
     // C-01 + H2-01 (方案 B): 币种核对先于金额核对.
-    // - 同币种: 直接精确相等比较 (原语义).
-    // - 跨币种且订单锁定美元锚定汇率: 期望金额 × rate 折算到回调币种后比较 (FX 折算).
-    // - 跨币种但无锁汇: 冻结为 fraud (杜绝无依据跨币种同额入账, 原 C-01 语义).
     let fx_cross = match fx_comparable(&order.currency, &txn.currency, order.locked_exchange_rate) {
         Ok(direct) => !direct,
         Err(reason) => {
@@ -251,6 +246,7 @@ async fn process_transaction(
         order.expected_amount
     };
 
+    // 金额比对 (cb_amount 已在幂等前解析)
     if cb_amount != expected_in_cb_currency {
         error!(
             expected_in_cb_currency = %expected_in_cb_currency,

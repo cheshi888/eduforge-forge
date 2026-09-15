@@ -8,7 +8,7 @@ export interface OrderSummary {
   gatewayPayload?: string;
 }
 
-const API_BASE = process.env.FORGE_API_BASE ?? "http://127.0.0.1:8080";
+const API_BASE = "/api";
 
 // C-08: uid 仅由服务端环境变量解析 (FORGE_DEMO_USER, 缺省 u-demo),
 // 客户端请求头不再参与 uid 决策 (旧版 x-forge-user 头可伪造 → 越权读任意用户订单)

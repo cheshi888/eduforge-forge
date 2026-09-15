@@ -236,19 +236,27 @@ impl EventConsumer {
                         .map_err(|e| e.to_string())?;
                     }
                     allocated = keys.len() as i64;
-                    // 卡密交付物落库: 取第一张作为代表 delivery (卡密已逐张绑定订单)
-                    if let Some(first) = keys.first() {
-                        delivery_id = sqlx::query_scalar(
+                    // 每张卡密各落一条 delivery, 用户侧 deliveries API 才能看到全部卡密
+                    let user_id: i64 = sqlx::query_scalar(
+                        "SELECT user_id FROM orders WHERE id = $1",
+                    )
+                    .bind(order_id)
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                    for k in &keys {
+                        let did: i64 = sqlx::query_scalar(
                             "INSERT INTO product_deliveries (user_id, product_id, order_id, delivery_type, card_key_id)
-                             VALUES (
-                               (SELECT user_id FROM orders WHERE id = $1),
-                               $1, $1, 'card_key', $2) RETURNING id",
+                             VALUES ($1, $2, $3, 'card_key', $4) RETURNING id",
                         )
+                        .bind(user_id)
+                        .bind(product_id)
                         .bind(order_id)
-                        .bind(first)
+                        .bind(k)
                         .fetch_one(&mut *tx)
                         .await
                         .map_err(|e| e.to_string())?;
+                        delivery_id = Some(did);
                     }
                 } else {
                     // 内容类交付: 源码/教程/资源包 → 登记 file/content 交付物, 供 /user/deliveries 下载
@@ -266,14 +274,25 @@ impl EventConsumer {
                         Some("resource") => "file",
                         _ => "content",
                     };
+                    // file_url 取该产品最新一条 active uploaded_files 的 storage_key (admin 已上传绑定);
+                    // 未上传则留空 (delivery 标记 content 占位, 下载端点返 404).
+                    let storage_key: Option<String> = sqlx::query_scalar(
+                        "SELECT storage_key FROM uploaded_files
+                         WHERE product_id = $1 AND active ORDER BY id DESC LIMIT 1",
+                    )
+                    .bind(product_id)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .unwrap_or(None);
                     delivery_id = sqlx::query_scalar(
-                        "INSERT INTO product_deliveries (user_id, product_id, order_id, delivery_type)
-                         VALUES ($1, $2, $3, $4) RETURNING id",
+                        "INSERT INTO product_deliveries (user_id, product_id, order_id, delivery_type, file_url)
+                         VALUES ($1, $2, $3, $4, $5) RETURNING id",
                     )
                     .bind(user_id)
                     .bind(product_id)
                     .bind(order_id)
                     .bind(dt)
+                    .bind(&storage_key)
                     .fetch_one(&mut *tx)
                     .await
                     .map_err(|e| e.to_string())?;

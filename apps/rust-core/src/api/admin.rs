@@ -18,27 +18,40 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/admin/products", axum::routing::get(list_products).post(create_product))
         .route(
-            "/admin/products/{id}",
+            "/admin/products/:id",
             axum::routing::get(get_product).put(update_product).delete(delete_product),
         )
-        .route("/admin/products/{id}/stock", axum::routing::post(adjust_stock))
+        .route("/admin/products/:id/stock", axum::routing::post(adjust_stock))
         .route("/admin/orders", axum::routing::get(list_orders))
-        .route("/admin/orders/{out_trade_no}", axum::routing::get(get_order))
+        .route("/admin/orders/:out_trade_no", axum::routing::get(get_order))
         .route(
-            "/admin/orders/{out_trade_no}/ship",
+            "/admin/orders/:out_trade_no/ship",
             axum::routing::post(ship_order),
         )
         .route(
             "/admin/card-keys",
             axum::routing::get(list_card_keys).post(generate_card_keys),
         )
+        .route("/admin/card-keys/summary", axum::routing::get(card_keys_summary))
         .route(
-            "/admin/card-keys/{id}",
-            axum::routing::get(get_card_key).put(revoke_card_key),
+            "/admin/card-keys/import",
+            axum::routing::post(import_card_keys),
+        )
+        .route(
+            "/admin/card-keys/:id",
+            axum::routing::get(get_card_key),
+        )
+        .route(
+            "/admin/card-keys/:id/revoke",
+            axum::routing::post(revoke_card_key),
+        )
+        .route(
+            "/admin/card-keys/:id/restore",
+            axum::routing::post(restore_card_key),
         )
         .route("/admin/fraud", axum::routing::get(list_fraud_events))
         .route(
-            "/admin/fraud/{id}",
+            "/admin/fraud/:id",
             axum::routing::post(resolve_fraud_event),
         )
         .route("/admin/stats", axum::routing::get(get_stats))
@@ -222,6 +235,8 @@ pub struct CardKeyDto {
     key_code: String,
     status: String,
     order_out_trade_no: Option<String>,
+    user_uid: Option<String>,
+    used_at: Option<chrono::DateTime<chrono::Utc>>,
     created_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -233,9 +248,19 @@ impl CardKeyDto {
             "keyCode": self.key_code,
             "status": self.status,
             "orderOutTradeNo": self.order_out_trade_no,
+            "userUid": self.user_uid,
+            "usedAt": self.used_at.map(|t| t.to_rfc3339()),
             "createdAt": self.created_at.to_rfc3339(),
         })
     }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CardKeyListQuery {
+    status: Option<String>,
+    product_id: Option<i64>,
+    limit: Option<i64>,
+    offset: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -243,6 +268,40 @@ impl CardKeyDto {
 pub struct GenerateKeysReq {
     product_id: i64,
     count: i32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportKeysReq {
+    product_id: i64,
+    /// 每行一个卡密的纯文本 (支持 \n / \r\n / 空白分隔), 或直接给卡密数组
+    raw: Option<String>,
+    keys: Option<Vec<String>>,
+}
+
+/// 解析导入文本为卡密列表: 支持每行一个 / 逗号 / 分号 / 空白, 或整体 JSON 数组。
+fn parse_import_keys(req: &ImportKeysReq) -> Vec<String> {
+    if let Some(arr) = &req.keys {
+        return arr.clone();
+    }
+    let Some(raw) = &req.raw else {
+        return Vec::new();
+    };
+    let trimmed = raw.trim();
+    if trimmed.starts_with('[') {
+        if let Ok(arr) = serde_json::from_str::<Vec<String>>(trimmed) {
+            return arr
+                .into_iter()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+        }
+    }
+    trimmed
+        .split(['\n', '\r', ',', ';'])
+        .map(|s| s.trim().trim_matches(|c| c == '"' || c == '\u{3001}').to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 #[derive(Debug, Serialize, FromRow)]
@@ -292,14 +351,15 @@ pub struct AdjustStockReq {
 pub async fn list_products(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Query(q): Query<Option<ProductQuery>>,
+    Query(q): Query<ProductQuery>,
 ) -> Result<Response, Response> {
     guard_admin(&state, &headers)?;
-    let cat_opt = q.as_ref().and_then(|x| x.category.clone());
-    let act_opt = q.and_then(|x| x.active);
+    let cat_opt = q.category.clone();
+    let act_opt = q.active;
     let mut sql = String::from(
-        "SELECT id, sku, title, category, cover, description, unit_price, currency,
-                stock, active, created_at FROM products WHERE 1=1",
+        "SELECT p.id, p.sku, p.title, p.category, p.cover, p.description, p.unit_price, p.currency,
+                p.stock, p.active, p.created_at
+         FROM products p WHERE 1=1",
     );
     let idx_cat = 1;
     let idx_act = if cat_opt.is_some() { 2 } else { 1 };
@@ -318,7 +378,33 @@ pub async fn list_products(
         query = query.bind(active);
     }
     let rows: Vec<ProductDto> = query.fetch_all(&state.pool).await.map_err(db_err)?;
-    let out: Vec<serde_json::Value> = rows.iter().map(|r| r.to_api()).collect();
+    // 逐个查该商品的有效上传文件数 (N+1 可接受: 商品列表量级小; 大数据量场景改批量 IN 聚合)
+    let mut counts: Vec<(i64, i64)> = Vec::with_capacity(rows.len());
+    for r in &rows {
+        let cnt: i32 = sqlx::query_scalar(
+            "SELECT COUNT(*)::int FROM uploaded_files WHERE product_id = $1 AND active",
+        )
+        .bind(r.id)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap_or(0);
+        counts.push((r.id, cnt as i64));
+    }
+    let out: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| {
+            let cnt = counts
+                .iter()
+                .find(|(id, _)| *id == r.id)
+                .map(|(_, c)| *c)
+                .unwrap_or(0);
+            let mut v = r.to_api();
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("uploadedFilesCount".into(), serde_json::json!(cnt));
+            }
+            v
+        })
+        .collect();
     Ok(Json(out).into_response())
 }
 
@@ -487,7 +573,7 @@ pub async fn list_orders(
     let limit_ph = placeholders.len() + 1;
     let offset_ph = placeholders.len() + 2;
     let sql = format!(
-        "SELECT o.id, o.out_trade_no, u.uid, p.sku, p.title, o.quantity,
+        "SELECT o.id, o.out_trade_no, u.uid AS user_uid, p.sku AS product_sku, p.title AS product_title, o.quantity,
                 o.expected_amount, o.paid_amount, o.currency, o.status,
                 o.gateway_type, o.crypto_network, o.blockchain_confirmations,
                 o.locked_exchange_rate, o.created_at
@@ -519,7 +605,7 @@ pub async fn get_order(
 ) -> Result<Response, Response> {
     guard_admin(&state, &headers)?;
     let r: Option<OrderDto> = sqlx::query_as(
-        "SELECT o.id, o.out_trade_no, u.uid, p.sku, p.title, o.quantity,
+        "SELECT o.id, o.out_trade_no, u.uid AS user_uid, p.sku AS product_sku, p.title AS product_title, o.quantity,
                 o.expected_amount, o.paid_amount, o.currency, o.status,
                 o.gateway_type, o.crypto_network, o.blockchain_confirmations,
                 o.locked_exchange_rate, o.created_at
@@ -620,20 +706,131 @@ pub async fn ship_order(
 pub async fn list_card_keys(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(q): Query<CardKeyListQuery>,
 ) -> Result<Response, Response> {
     guard_admin(&state, &headers)?;
-    let rows: Vec<CardKeyDto> = sqlx::query_as(
-        "SELECT k.id, p.sku, k.key_code, k.status, o.out_trade_no, k.created_at
+    let limit = q.limit.unwrap_or(50).clamp(1, 500);
+    let offset = q.offset.unwrap_or(0).max(0);
+
+    let mut placeholders: Vec<String> = Vec::new();
+    let mut binds: Vec<Bind> = Vec::new();
+    if let Some(status) = &q.status {
+        placeholders.push(format!("k.status = ${}", placeholders.len() + 1));
+        binds.push(Bind::Status(status.clone()));
+    }
+    if let Some(pid) = q.product_id {
+        placeholders.push(format!("k.product_id = ${}", placeholders.len() + 1));
+        binds.push(Bind::Pid(pid));
+    }
+    let where_sql = if placeholders.is_empty() {
+        "1=1".to_string()
+    } else {
+        placeholders.join(" AND ")
+    };
+    let limit_ph = binds.len() + 1;
+    let offset_ph = binds.len() + 2;
+    let sql = format!(
+        "SELECT k.id, p.sku AS product_sku, k.key_code, k.status,
+                o.out_trade_no AS order_out_trade_no, u.uid AS user_uid,
+                k.used_at, k.created_at
          FROM card_keys k
          JOIN products p ON p.id = k.product_id
          LEFT JOIN orders o ON o.id = k.order_id
-         ORDER BY k.id DESC LIMIT 200",
+         LEFT JOIN users u ON u.id = o.user_id
+         WHERE {where_sql}
+         ORDER BY k.id DESC LIMIT ${limit_ph} OFFSET ${offset_ph}"
+    );
+    let mut query = sqlx::query_as::<_, CardKeyDto>(&sql);
+    for b in binds {
+        query = match b {
+            Bind::Status(s) => query.bind(s),
+            Bind::Pid(p) => query.bind(p),
+        };
+    }
+    query = query.bind(limit).bind(offset);
+    let rows: Vec<CardKeyDto> = query.fetch_all(&state.pool).await.map_err(db_err)?;
+    let out: Vec<serde_json::Value> = rows.iter().map(|r| r.to_api()).collect();
+    Ok(Json(out).into_response())
+}
+
+enum Bind {
+    Status(String),
+    Pid(i64),
+}
+
+// 卡密库统计: 按状态计数 + 按商品分组 (含卖出客户去重数), 供管理后台概览
+#[derive(Debug, FromRow)]
+struct KeyStatusCount {
+    status: String,
+    cnt: i32,
+}
+
+#[derive(Debug, FromRow)]
+struct KeyProductSummary {
+    product_id: i64,
+    product_sku: String,
+    total: i32,
+    available: i32,
+    used: i32,
+    reversed: i32,
+    sold_customers: i32,
+}
+
+pub async fn card_keys_summary(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, Response> {
+    guard_admin(&state, &headers)?;
+    let status_counts: Vec<KeyStatusCount> = sqlx::query_as(
+        "SELECT status, COUNT(*)::int AS cnt FROM card_keys GROUP BY status",
     )
     .fetch_all(&state.pool)
     .await
     .map_err(db_err)?;
-    let out: Vec<serde_json::Value> = rows.iter().map(|r| r.to_api()).collect();
-    Ok(Json(out).into_response())
+
+    let product_rows: Vec<KeyProductSummary> = sqlx::query_as(
+        "SELECT k.product_id,
+                p.sku AS product_sku,
+                COUNT(*)::int AS total,
+                COUNT(*) FILTER (WHERE k.status = 'AVAILABLE')::int AS available,
+                COUNT(*) FILTER (WHERE k.status = 'USED')::int AS used,
+                COUNT(*) FILTER (WHERE k.status = 'REVERSED')::int AS reversed,
+                COUNT(DISTINCT u.id) FILTER (WHERE o.id IS NOT NULL)::int AS sold_customers
+         FROM card_keys k
+         JOIN products p ON p.id = k.product_id
+         LEFT JOIN orders o ON o.id = k.order_id
+         LEFT JOIN users u ON u.id = o.user_id
+         GROUP BY k.product_id, p.sku
+         ORDER BY k.product_id",
+    )
+    .fetch_all(&state.pool)
+    .await
+    .map_err(db_err)?;
+
+    let by_status: serde_json::Map<String, serde_json::Value> = status_counts
+        .iter()
+        .map(|c| (c.status.to_uppercase(), serde_json::json!(c.cnt)))
+        .collect();
+    let products: Vec<serde_json::Value> = product_rows
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "productId": r.product_id,
+                "productSku": r.product_sku,
+                "total": r.total,
+                "available": r.available,
+                "used": r.used,
+                "reversed": r.reversed,
+                "soldCustomers": r.sold_customers,
+            })
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "byStatus": by_status,
+        "products": products,
+    }))
+    .into_response())
 }
 
 pub async fn generate_card_keys(
@@ -693,15 +890,91 @@ pub async fn generate_card_keys(
         .map_err(db_err)?;
         inserted.push(id);
     }
-    Ok((
-        StatusCode::CREATED,
-        Json(serde_json::json!({
-            "productId": prod_id,
-            "count": inserted.len(),
-            "ids": inserted
-        })),
+    Ok(
+        (
+            StatusCode::CREATED,
+            Json(serde_json::json!({
+                "productId": prod_id,
+                "count": inserted.len(),
+                "ids": inserted
+            })),
+        )
+            .into_response(),
     )
-        .into_response())
+}
+
+// 导入卡密: 从 TXT/纯文本批量入库为 AVAILABLE. 支持每行一个 / 逗号 / 分号 / JSON 数组。
+pub async fn import_card_keys(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<ImportKeysReq>,
+) -> Result<Response, Response> {
+    guard_admin(&state, &headers)?;
+    if req.product_id == 0 {
+        return Ok((StatusCode::BAD_REQUEST, "productId is required").into_response());
+    }
+    let keys = parse_import_keys(&req);
+    if keys.is_empty() {
+        return Ok((StatusCode::BAD_REQUEST, "no card keys provided").into_response());
+    }
+    let prod: Option<(i64,)> = sqlx::query_as(
+        "SELECT id FROM products WHERE id = $1 AND category = 'card'",
+    )
+    .bind(req.product_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(db_err)?;
+    let Some(prod) = prod else {
+        return Ok((StatusCode::NOT_FOUND, "card product not found").into_response());
+    };
+    let prod_id = prod.0;
+
+    use sha2::{Digest, Sha256};
+    let mut inserted: Vec<i64> = Vec::new();
+    let mut skipped: i32 = 0;
+    for raw_key in keys.iter() {
+        let key_code = raw_key.trim();
+        if key_code.is_empty() {
+            skipped += 1;
+            continue;
+        }
+        let hash = hex::encode(Sha256::digest(key_code.as_bytes()));
+        // 去重: 同商品下 key_hash 已存在则跳过
+        let exists: Option<(i32,)> = sqlx::query_as(
+            "SELECT 1::int AS f FROM card_keys WHERE product_id = $1 AND key_hash = $2 LIMIT 1",
+        )
+        .bind(prod_id)
+        .bind(&hash)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(db_err)?;
+        if exists.is_some() {
+            skipped += 1;
+            continue;
+        }
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO card_keys (product_id, key_code, key_hash) VALUES ($1, $2, $3) RETURNING id",
+        )
+        .bind(prod_id)
+        .bind(key_code)
+        .bind(&hash)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(db_err)?;
+        inserted.push(id);
+    }
+    Ok(
+        (
+            StatusCode::CREATED,
+            Json(serde_json::json!({
+                "productId": prod_id,
+                "inserted": inserted.len(),
+                "skipped": skipped,
+                "ids": inserted
+            })),
+        )
+            .into_response(),
+    )
 }
 
 pub async fn get_card_key(
@@ -711,10 +984,13 @@ pub async fn get_card_key(
 ) -> Result<Response, Response> {
     guard_admin(&state, &headers)?;
     let r: Option<CardKeyDto> = sqlx::query_as(
-        "SELECT k.id, p.sku, k.key_code, k.status, o.out_trade_no, k.created_at
+        "SELECT k.id, p.sku AS product_sku, k.key_code, k.status,
+                o.out_trade_no AS order_out_trade_no, u.uid AS user_uid,
+                k.used_at, k.created_at
          FROM card_keys k
          JOIN products p ON p.id = k.product_id
          LEFT JOIN orders o ON o.id = k.order_id
+         LEFT JOIN users u ON u.id = o.user_id
          WHERE k.id = $1",
     )
     .bind(id)
@@ -742,6 +1018,34 @@ pub async fn revoke_card_key(
     .map_err(db_err)?;
     if res.rows_affected() == 0 {
         return Ok((StatusCode::BAD_REQUEST, "only USED keys can be revoked").into_response());
+    }
+    // 吊销时解除订单绑定, 避免卡密已失效仍挂在订单上 (订单本身保持 SHIPPED 已成交事实)
+    let _ = sqlx::query(
+        "UPDATE card_keys SET order_id = NULL, used_at = NULL WHERE id = $1",
+    )
+    .bind(id)
+    .execute(&state.pool)
+    .await;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+// 恢复卡密: REVERSED -> AVAILABLE (运营误吊销救济). 仅对已解除订单绑定的 REVERSED 生效.
+pub async fn restore_card_key(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+) -> Result<Response, Response> {
+    guard_admin(&state, &headers)?;
+    let res = sqlx::query(
+        "UPDATE card_keys SET status = 'AVAILABLE', order_id = NULL, used_at = NULL
+         WHERE id = $1 AND status = 'REVERSED'",
+    )
+    .bind(id)
+    .execute(&state.pool)
+    .await
+    .map_err(db_err)?;
+    if res.rows_affected() == 0 {
+        return Ok((StatusCode::BAD_REQUEST, "only REVERSED keys can be restored").into_response());
     }
     Ok(StatusCode::NO_CONTENT.into_response())
 }

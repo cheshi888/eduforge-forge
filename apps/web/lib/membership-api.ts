@@ -2,8 +2,8 @@
 // 金额 6 位小数微单位 int64, 展示走 lib/amount.ts formatMicro (BigInt)
 import { resolveUid } from "@/lib/api";
 
-const API_BASE = process.env.FORGE_API_BASE ?? "http://127.0.0.1:8080";
-const ADMIN_TOKEN = process.env.FORGE_ADMIN_TOKEN ?? "";
+const API_BASE = "/api";
+const ADMIN_TOKEN = process.env.NEXT_PUBLIC_FORGE_ADMIN_TOKEN ?? "";
 
 export interface Tier {
   code: string;

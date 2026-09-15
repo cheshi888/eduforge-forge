@@ -34,7 +34,7 @@ CREATE TABLE fraud_events (
         CHECK (reason IN ('currency_mismatch','amount_mismatch','orphan_callback','confirmation_insufficient','other')),
     received_amount NUMERIC(20,6),
     expected_amount NUMERIC(20,6),
-    currency     CHAR(3),
+    currency     VARCHAR(8),
     gateway_type VARCHAR(24),
     evidence     JSONB        NOT NULL DEFAULT '{}'::jsonb,
     resolved     BOOLEAN      NOT NULL DEFAULT FALSE,

@@ -16,6 +16,7 @@ export interface Product {
   stock: number;
   active: boolean;
   createdAt: string;
+  uploadedFilesCount?: number;
 }
 
 export interface ProductUpsertReq {
@@ -75,7 +76,24 @@ export interface CardKey {
   keyCode: string;
   status: CardKeyStatus;
   orderOutTradeNo: string | null;
+  userUid: string | null;
+  usedAt: string | null;
   createdAt: string;
+}
+
+export interface CardKeyProductSummary {
+  productId: number;
+  productSku: string;
+  total: number;
+  available: number;
+  used: number;
+  reversed: number;
+  soldCustomers: number;
+}
+
+export interface CardKeysSummary {
+  byStatus: Record<string, number>;
+  products: CardKeyProductSummary[];
 }
 
 export type FraudReason =
@@ -124,8 +142,8 @@ export class AdminApiError extends Error {
   }
 }
 
-export const API_BASE = process.env.FORGE_API_BASE ?? "http://127.0.0.1:8080";
-const ADMIN_TOKEN = process.env.FORGE_ADMIN_TOKEN ?? "";
+export const API_BASE = "/api";
+const ADMIN_TOKEN = process.env.NEXT_PUBLIC_FORGE_ADMIN_TOKEN ?? "";
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   let res: Response;
@@ -226,8 +244,23 @@ export function shipOrder(outTradeNo: string): Promise<{ shipped: string }> {
   );
 }
 
-export function listCardKeys(): Promise<CardKey[]> {
-  return request<CardKey[]>("/admin/card-keys");
+export function listCardKeys(params?: {
+  status?: string;
+  productId?: number;
+  limit?: number;
+  offset?: number;
+}): Promise<CardKey[]> {
+  const q = qs({
+    status: params?.status,
+    product_id: params?.productId,
+    limit: params?.limit,
+    offset: params?.offset
+  });
+  return request<CardKey[]>(`/admin/card-keys${q}`);
+}
+
+export function listCardKeysSummary(): Promise<CardKeysSummary> {
+  return request<CardKeysSummary>("/admin/card-keys/summary");
 }
 
 export function generateCardKeys(productId: number, count: number): Promise<GenerateKeysResult> {
@@ -238,7 +271,25 @@ export function generateCardKeys(productId: number, count: number): Promise<Gene
 }
 
 export function revokeCardKey(id: number): Promise<void> {
-  return request<void>(`/admin/card-keys/${id}`, { method: "PUT" });
+  return request<void>(`/admin/card-keys/${id}/revoke`, { method: "POST", body: "{}" });
+}
+
+export function restoreCardKey(id: number): Promise<void> {
+  return request<void>(`/admin/card-keys/${id}/restore`, { method: "POST", body: "{}" });
+}
+
+export interface ImportKeysResult {
+  productId: number;
+  inserted: number;
+  skipped: number;
+  ids: number[];
+}
+
+export function importCardKeys(productId: number, raw: string): Promise<ImportKeysResult> {
+  return request<ImportKeysResult>("/admin/card-keys/import", {
+    method: "POST",
+    body: JSON.stringify({ productId, raw })
+  });
 }
 
 export function listFraud(): Promise<FraudEvent[]> {
@@ -266,20 +317,27 @@ export function adminListFiles(productId?: number): Promise<UploadedFile[]> {
 export function adminUploadFileMeta(body: {
   productId: number;
   fileName: string;
-  storageKey: string;
+  storageKey?: string;
   sizeBytes?: number;
   mimeType?: string;
   checksumSha256?: string;
-}): Promise<{ id: number }> {
-  return request<{ id: number }>("/admin/deliveries/files", {
-    method: "POST",
-    body: JSON.stringify({
-      product_id: body.productId,
-      file_name: body.fileName,
-      storage_key: body.storageKey,
-      size_bytes: body.sizeBytes ?? null,
-      mime_type: body.mimeType ?? null,
-      checksum_sha256: body.checksumSha256 ?? null
-    })
-  });
+  content?: string;
+}): Promise<{ id: number; storageKey: string }> {
+    const hasContent = body.content != null && body.content !== "";
+    const hasKey = body.storageKey != null && body.storageKey !== "";
+    if (!hasContent && !hasKey) {
+      return Promise.reject(new AdminApiError("需本地内容(content)或 storageKey", 400));
+    }
+    return request<{ id: number; storageKey: string }>("/admin/deliveries/files", {
+      method: "POST",
+      body: JSON.stringify({
+        product_id: body.productId,
+        file_name: body.fileName,
+        storage_key: hasKey ? body.storageKey : null,
+        size_bytes: body.sizeBytes ?? null,
+        mime_type: body.mimeType ?? null,
+        checksum_sha256: body.checksumSha256 ?? null,
+        content: body.content ?? null
+      })
+    });
 }
