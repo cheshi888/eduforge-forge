@@ -1,12 +1,11 @@
 "use client";
 
-import { useMemo, useState, useActionState, useEffect } from "react";
+import { useMemo, useState, useActionState } from "react";
 import { useTranslations } from "next-intl";
 import { createOrder, type CheckoutState } from "@/app/actions/checkout";
-import { formatMicro, lockedUsd, FX_METHODS, type PaymentMethod } from "@/lib/amount";
+import { formatMicro, lockedUsd, orderCurrency, type PaymentMethod } from "@/lib/amount";
 import type { OrderSummary } from "@/lib/api";
-import type { Product } from "@/lib/products";
-import { fetchProfile, type UserTier } from "@/lib/membership-api";
+import type { CatalogProduct } from "@/lib/catalog";
 
 const METHODS: { key: PaymentMethod; icon: string }[] = [
   { key: "alipay", icon: "¥" },
@@ -17,7 +16,7 @@ const METHODS: { key: PaymentMethod; icon: string }[] = [
   { key: "usdt", icon: "₮" }
 ];
 
-const ITEM_ICONS: Record<Product["category"], string> = {
+const ITEM_ICONS: Record<CatalogProduct["category"], string> = {
   source: "{ }",
   tutorial: "▶",
   card: "◇",
@@ -33,7 +32,7 @@ export function CheckoutForm({
 }: {
   order: OrderSummary;
   locale: string;
-  item?: Product;
+  item?: CatalogProduct;
 }) {
   const t = useTranslations("checkout");
   const [method, setMethod] = useState<PaymentMethod>("alipay");
@@ -41,30 +40,25 @@ export function CheckoutForm({
     createOrder,
     null
   );
-  // 会员折扣: 拉取当前用户等级, 展示 discountPct 权益
-  const [member, setMember] = useState<UserTier | null>(null);
-  useEffect(() => {
-    fetchProfile()
-      .then(setMember)
-      .catch(() => setMember(null));
-  }, []);
 
-  const currency = FX_METHODS.includes(method) ? "USD" : order.currency;
+  // 仅 USDT (链上稳定币) 以 USD 展示; 其余通道金额仍以订单币种展示,
+  // 跨境收单(paypal/card) 的美元锚定汇率由 lockedRate 单独提示 (见 amount.ts orderCurrency)
+  const currency = orderCurrency(order, method);
+  // order.amountMicro 已是后端应用会员折扣后的折后价 (下单时锁定),
+  // order.originalAmountMicro / discountPct 为折前原价与折扣率, 用于划线展示.
   const totalDisplay = useMemo(
     () => formatMicro(order.amountMicro, locale, currency),
     [order.amountMicro, locale, currency]
   );
-  // 会员折扣后金额: 整数微单位 * (100 - pct) / 100, 无浮点
-  const discountedMicro = useMemo(() => {
-    const pct = member?.discountPct ?? 0;
-    if (pct <= 0 || pct >= 100) return order.amountMicro;
-    return Math.round((order.amountMicro * (100 - pct)) / 100);
-  }, [order.amountMicro, member]);
-  const discountedDisplay = useMemo(
-    () => formatMicro(discountedMicro, locale, currency),
-    [discountedMicro, locale, currency]
+  const hasDiscount =
+    (order.discountPct ?? 0) > 0 && (order.originalAmountMicro ?? 0) > 0;
+  const originalDisplay = useMemo(
+    () =>
+      hasDiscount && order.originalAmountMicro != null
+        ? formatMicro(order.originalAmountMicro, locale, currency)
+        : null,
+    [hasDiscount, order.originalAmountMicro, locale, currency]
   );
-  const hasDiscount = (member?.discountPct ?? 0) > 0;
   const rateDisplay = useMemo(
     () =>
       order.lockedRateUsd
@@ -72,10 +66,20 @@ export function CheckoutForm({
         : null,
     [order.lockedRateUsd, order.amountMicro, locale]
   );
+  // 优惠券 (阶段3): 命中时展示券码与优惠金额
+  const hasCoupon = (order.couponCode ?? "") !== "" && (order.couponDiscountMicro ?? 0) > 0;
+  const couponDiscountDisplay = useMemo(
+    () =>
+      hasCoupon && order.couponDiscountMicro != null
+        ? formatMicro(order.couponDiscountMicro, locale, currency)
+        : null,
+    [hasCoupon, order.couponDiscountMicro, locale, currency]
+  );
 
   const submit = (fd: FormData) => formAction(fd);
 
-  const activeStep = state?.ok ? 2 : method === "alipay" ? 2 : 1;
+  // 步骤条: 已提交成功 → 第 3 步; 未提交 → 第 2 步 (选支付方式)
+  const activeStep = state?.ok ? 2 : 1;
 
   return (
     <section className="forge-fade-up relative overflow-hidden rounded-2xl border border-zinc-800/80 bg-zinc-900/50 p-6 backdrop-blur-md">
@@ -113,7 +117,7 @@ export function CheckoutForm({
               </div>
               <div className="min-w-0 flex-1">
                 <div className="text-[11px] uppercase tracking-wider text-zinc-500">
-                  {item.categoryLabel}
+                  {item.category}
                 </div>
                 <div className="truncate text-sm font-semibold text-zinc-100">{item.name}</div>
                 <div className="mt-0.5 truncate text-xs text-zinc-500">{item.desc}</div>
@@ -138,9 +142,22 @@ export function CheckoutForm({
           {hasDiscount ? (
             <div className="flex items-baseline justify-between text-xs">
               <dt className="text-indigo-400">
-                {t("memberDiscount")} ({member!.tierCode} · {member!.discountPct}%)
+                {t("memberDiscount")} ({order.discountPct}%)
               </dt>
-              <dd className="font-mono font-semibold text-emerald-400">{discountedDisplay}</dd>
+              <dd className="font-mono">
+                <span className="mr-2 text-zinc-500 line-through">{originalDisplay}</span>
+                <span className="font-semibold text-emerald-400">{totalDisplay}</span>
+              </dd>
+            </div>
+          ) : null}
+          {hasCoupon ? (
+            <div className="flex items-baseline justify-between text-xs">
+              <dt className="text-amber-400">
+                {t("coupon")} · {order.couponCode}
+              </dt>
+              <dd className="font-mono font-semibold text-amber-400">
+                -{couponDiscountDisplay}
+              </dd>
             </div>
           ) : null}
           {rateDisplay ? (

@@ -15,6 +15,8 @@
     },
     "lockedRate": "주문 시점에 고정된 환율 (USD 기준)",
     "memberDiscount": "멤버 할인",
+    "coupon": "쿠폰",
+    "appliedAtCheckout": "주문 시 자동 적용",
     "payNow": "결제 전송",
     "submitting": "전송 중…",
     "created": "결제 요청이 생성되었습니다. 게이트웨이 콜백 검증을 기다리는 중",
@@ -29,7 +31,28 @@
     "title": "상품 쇼윈도",
     "subtitle": "소스 / 튜토리얼 / 카드키 / 리소스팩 · 결제 후 자동 발송",
     "buy": "바로 구매",
-    "sold": "{n} 판매"
+    "sold": "{n} 판매",
+    "buyNow": "바로 구매 →",
+    "favorite": "☆ 찜하기",
+    "favorited": "★ 찜 완료",
+    "reviews": "리뷰",
+    "questions": "Q&A",
+    "noReviews": "아직 리뷰가 없습니다",
+    "noQuestions": "아직 질문이 없습니다",
+    "reviewPlaceholder": "사용 후기를 남겨보세요…",
+    "questionPlaceholder": "상품에 대해 궁금한 점이 있나요?",
+    "publish": "게시",
+    "ask": "질문하기",
+    "pendingAnswer": "답변 대기",
+    "rating": "평점",
+    "all": "전체",
+    "source": "소스",
+    "tutorial": "튜토리얼",
+    "card": "카드키",
+    "resource": "리소스",
+    "searchPlaceholder": "상품 검색…",
+    "unavailable": "카탈로그 서비스를 이용할 수 없습니다. 잠시 후 다시 시도해 주세요",
+    "noMatch": "일치하는 상품이 없습니다"
   },
   "admin": {
     "title": "관리 대시보드",
@@ -102,7 +125,6 @@
       "received": "실수령",
       "expected": "예상",
       "file": "파일",
-      "product": "상품",
       "storage": "저장소",
       "size": "크기",
       "inactive": "비활성",
@@ -187,7 +209,30 @@
     "store": "쇼핑",
     "membership": "멤버십",
     "myFiles": "내 파일",
-    "admin": "관리"
+    "admin": "관리",
+    "login": "로그인",
+    "logout": "로그아웃",
+    "notifications": "알림",
+    "markAllRead": "모두 읽음",
+    "noNotifications": "알림이 없습니다",
+    "loading": "불러오는 중…"
+  },
+  "auth": {
+    "loginTitle": "로그인",
+    "registerTitle": "회원가입",
+    "email": "이메일",
+    "password": "비밀번호",
+    "login": "로그인",
+    "register": "회원가입",
+    "noAccount": "계정이 없으신가요? 회원가입",
+    "hasAccount": "이미 계정이 있으신가요? 로그인",
+    "submitLogin": "로그인",
+    "submitRegister": "계정 만들기",
+    "submitting": "제출 중…",
+    "error": "로그인 실패, 이메일과 비밀번호를 확인하세요",
+    "loginOk": "로그인 성공",
+    "registerOk": "회원가입 성공",
+    "passwordHint": "8자 이상"
   },
   "membership": {
     "subtitle": "멤버십 업그레이드로 콘텐츠 배송·할인·다운로드 한도 해제.",
@@ -202,7 +247,9 @@
     "unlimited": "무제한",
     "upgrade": "업그레이드",
     "upgrading": "업그레이드 중…",
-    "goMyFiles": "내 파일 및 다운로드 보기"
+    "goMyFiles": "내 파일 및 다운로드 보기",
+    "loginToView": "로그인하면 회원 정보와 혜택을 볼 수 있습니다",
+    "login": "로그인"
   },
   "deliveries": {
     "subtitle": "구매한 소스·튜토리얼·리소스 팩·카드 키를 다운로드하세요.",
@@ -211,6 +258,8 @@
     "download": "다운로드",
     "downloading": "준비 중…",
     "downloaded": "다운로드됨",
-    "retry": "다시 시도"
+    "retry": "다시 시도",
+    "loginToView": "로그인하면 구매한 파일과 키를 볼 수 있습니다",
+    "login": "로그인"
   }
 }

@@ -21,8 +21,9 @@ function round2(micro: bigint): { whole: bigint; frac2: bigint } {
   const neg = micro < 0n;
   const abs = neg ? -micro : micro;
   let whole = abs / 1_000_000n;
-  // 2 位小数四舍五入: (frac + 5000) / 10000
-  let frac2 = ((abs % 1_000_000n) * 100n + 5_000n) / 10_000n;
+  // 6 位微单位小数 → 2 位小数(分): (frac6 + 5000) / 10000 即为四舍五入到分。
+  // 修复: 原实现误乘 100n, 导致 frac2 被放大 100 倍, 金额显示错误 (如 199.99 → 298)。
+  let frac2 = ((abs % 1_000_000n) + 5_000n) / 10_000n;
   if (frac2 >= 100n) {
     whole += 1n;
     frac2 -= 100n;

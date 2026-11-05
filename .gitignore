@@ -195,3 +195,13 @@ __pycache__/
 # Secrets
 .env
 .env.local
+
+# WorkBuddy project data (local only, not part of the repo)
+.workbuddy/
+
+# Next.js build backups
+apps/web/.next-bak/
+
+# Local dev infra binaries (nats-server.exe etc.)
+tools/nats-server.exe
+tools/nats-server.zip

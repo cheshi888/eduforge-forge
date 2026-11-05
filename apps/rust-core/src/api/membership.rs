@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
 use crate::api::admin::guard_admin;
+use crate::api::auth::user_id_from_token;
 use crate::domain::membership::Tier;
 use crate::AppState;
 
@@ -28,7 +29,10 @@ pub fn routes() -> Router<AppState> {
         .route("/files/:id", axum::routing::get(download_file))
         .route("/user/tier", axum::routing::get(get_tiers))
         // admin 侧
-        .route("/admin/memberships/tiers", axum::routing::get(list_tiers))
+        .route(
+            "/admin/memberships/tiers",
+            axum::routing::get(list_tiers_admin),
+        )
         .route("/admin/users/:uid/tier", axum::routing::post(set_user_tier))
         .route(
             "/admin/deliveries/files",
@@ -39,11 +43,6 @@ pub fn routes() -> Router<AppState> {
 // ---------------------------------------------------------------------------
 // 用户侧
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize)]
-pub struct UidQuery {
-    uid: String,
-}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -68,9 +67,11 @@ struct ProfileRow {
     perk_json: serde_json::Value,
 }
 
+// 字段 price_micro / total_spent_micro 在库内已是微单位 (1 元 = 1_000_000 micro),
+// 直接取整返回即可。修复 B4-11: 原实现又乘 1_000_000, 导致会员套餐价显示放大 100 万倍
+// (¥99 → ¥99,000,000)。这里的 Decimal 已是微单位数值 (如 99000000.000000), 无需再换算。
 fn micros(d: &Decimal) -> i64 {
-    let m = (d * Decimal::new(1_000_000, 0)).round_dp(0);
-    m.to_string().parse::<i64>().unwrap_or(0)
+    d.round_dp(0).to_string().parse::<i64>().unwrap_or(0)
 }
 
 fn perk_labels(v: &serde_json::Value) -> Vec<String> {
@@ -85,15 +86,18 @@ fn perk_labels(v: &serde_json::Value) -> Vec<String> {
 
 pub async fn get_profile(
     State(state): State<AppState>,
-    Query(q): Query<UidQuery>,
+    headers: HeaderMap,
 ) -> Result<Response, Response> {
+    let user_id = user_id_from_token(&state, &headers)
+        .await
+        .ok_or_else(|| (StatusCode::UNAUTHORIZED, "unauthorized").into_response())?;
     let row: Option<ProfileRow> = sqlx::query_as(
         "SELECT u.uid, u.tier_code, to_char(u.tier_expires_at,'YYYY-MM-DD') AS tier_expires_at,
                 u.total_spent_micro, t.discount_pct, t.max_downloads, t.perk_json
          FROM users u JOIN membership_tiers t ON t.code = u.tier_code
-         WHERE u.uid = $1",
+         WHERE u.id = $1",
     )
-    .bind(&q.uid)
+    .bind(user_id)
     .fetch_optional(&state.pool)
     .await
     .map_err(db_err)?;
@@ -112,63 +116,28 @@ pub async fn get_profile(
 
 #[derive(Debug, Deserialize)]
 pub struct UpgradeReq {
-    uid: String,
+    #[allow(dead_code)]
     tier_code: String,
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UpgradeResp {
-    uid: String,
-    tier_code: String,
-}
-
-// 升级会员: 仅允许向更高等级迁移 (can_upgrade_from), 续期/降级走 admin 通道
+// 升级会员: B4-09 (免费升级漏洞) 修复 — 会员升级必须走支付流程, 禁止直接免费调用.
+// 正确路径: 购买会员商品下单支付 → webhook 结算时按 total_spent_micro 自动晋升 (webhook.rs),
+// 或由 admin 通道 (set_user_tier) 人工变更. 本端点不再接受用户侧直接升级.
 pub async fn upgrade_tier(
     State(state): State<AppState>,
-    Json(req): Json<UpgradeReq>,
+    headers: HeaderMap,
+    Json(_req): Json<UpgradeReq>,
 ) -> Result<Response, Response> {
-    let to = Tier::from_db_value(&req.tier_code)
-        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid tier code").into_response())?;
-    let cur: Option<Tier> = sqlx::query_as(
-        "SELECT tier_code FROM users WHERE uid = $1",
+    // 保留鉴权 (确认身份), 但拒绝直接升级, 引导走支付流程.
+    let user_id = user_id_from_token(&state, &headers)
+        .await
+        .ok_or_else(|| (StatusCode::UNAUTHORIZED, "unauthorized").into_response())?;
+    let _ = user_id;
+    Ok((
+        StatusCode::FORBIDDEN,
+        "membership upgrade requires payment; place an order for the tier instead",
     )
-    .bind(&req.uid)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(db_err)?
-    .map(|r: (String,)| {
-        Tier::from_db_value(&r.0)
-            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "bad stored tier").into_response())
-    })
-    .transpose()
-    .map_err(|e| e)?;
-    let Some(cur) = cur else {
-        return Ok((StatusCode::NOT_FOUND, "user not found").into_response());
-    };
-    if !cur.can_upgrade_from(to) {
-        return Ok((
-            StatusCode::BAD_REQUEST,
-            format!("cannot upgrade from {} to {}", cur.as_db_value(), to.as_db_value()),
-        )
-            .into_response());
-    }
-    sqlx::query(
-        "UPDATE users SET tier_code = $2,
-             tier_expires_at = COALESCE(tier_expires_at, now()) + interval '1 year',
-             updated_at = now()
-         WHERE uid = $1",
-    )
-    .bind(&req.uid)
-    .bind(to.as_db_value())
-    .execute(&state.pool)
-    .await
-    .map_err(db_err)?;
-    Ok(Json(UpgradeResp {
-        uid: req.uid,
-        tier_code: to.as_db_value().to_string(),
-    })
-    .into_response())
+        .into_response())
 }
 
 #[derive(Debug, FromRow)]
@@ -224,18 +193,21 @@ struct DeliveryRow {
 
 pub async fn list_deliveries(
     State(state): State<AppState>,
-    Query(q): Query<UidQuery>,
+    headers: HeaderMap,
 ) -> Result<Response, Response> {
+    let user_id = user_id_from_token(&state, &headers)
+        .await
+        .ok_or_else(|| (StatusCode::UNAUTHORIZED, "unauthorized").into_response())?;
     let rows: Vec<DeliveryRow> = sqlx::query_as(
         "SELECT d.id, d.delivery_type, d.file_name, d.file_url, d.card_key_id,
                 d.download_count, p.sku AS product_sku, p.title AS product_title, p.category AS product_category, k.key_code AS card_key, to_char(d.created_at,'YYYY-MM-DD') AS created_at
          FROM product_deliveries d
          JOIN products p ON p.id = d.product_id
          LEFT JOIN card_keys k ON k.id = d.card_key_id
-         WHERE d.user_id = (SELECT id FROM users WHERE uid = $1)
+         WHERE d.user_id = $1
          ORDER BY d.id DESC",
     )
-    .bind(&q.uid)
+    .bind(user_id)
     .fetch_all(&state.pool)
     .await
     .map_err(db_err)?;
@@ -263,16 +235,19 @@ pub async fn list_deliveries(
 // 标记下载 (受会员等级 max_downloads 约束, 防滥下)
 pub async fn mark_downloaded(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(id): Path<i64>,
-    Query(q): Query<UidQuery>,
 ) -> Result<Response, Response> {
+    let user_id = user_id_from_token(&state, &headers)
+        .await
+        .ok_or_else(|| (StatusCode::UNAUTHORIZED, "unauthorized").into_response())?;
     let row: Option<(i16, i32, Option<i64>)> = sqlx::query_as(
         "SELECT u.max_downloads, COALESCE(d.download_count,0), d.id
           FROM (SELECT u.id, t.max_downloads FROM users u JOIN membership_tiers t
-                ON t.code = u.tier_code WHERE u.uid=$1) u
+                ON t.code = u.tier_code WHERE u.id=$1) u
           LEFT JOIN product_deliveries d ON d.id=$2 AND d.user_id=u.id",
     )
-    .bind(&q.uid)
+    .bind(user_id)
     .bind(id)
     .fetch_optional(&state.pool)
     .await
@@ -289,10 +264,10 @@ pub async fn mark_downloaded(
     }
     let res = sqlx::query(
         "UPDATE product_deliveries SET download_count = download_count + 1,
-             downloaded_at = now() WHERE id = $1 AND user_id = (SELECT id FROM users WHERE uid = $2)",
+             downloaded_at = now() WHERE id = $1 AND user_id = $2",
     )
     .bind(id)
-    .bind(&q.uid)
+    .bind(user_id)
     .execute(&state.pool)
     .await
     .map_err(db_err)?;
@@ -306,7 +281,17 @@ pub async fn mark_downloaded(
 // admin 侧
 // ---------------------------------------------------------------------------
 
-pub async fn list_tiers(State(state): State<AppState>) -> Result<Response, Response> {
+// admin 侧等级列表: 与用户侧数据一致, 但必须走 admin 鉴权 (越权枚举防护)
+pub async fn list_tiers_admin(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, Response> {
+    guard_admin(&state, &headers)?;
+    let out = tiers_payload(&state).await?;
+    Ok(Json(out).into_response())
+}
+
+async fn tiers_payload(state: &AppState) -> Result<Vec<serde_json::Value>, Response> {
     let rows: Vec<TierRow> = sqlx::query_as(
         "SELECT code, name, price_micro, duration_days, discount_pct, max_downloads, perk_json
          FROM membership_tiers ORDER BY id",
@@ -314,7 +299,7 @@ pub async fn list_tiers(State(state): State<AppState>) -> Result<Response, Respo
     .fetch_all(&state.pool)
     .await
     .map_err(db_err)?;
-    let out: Vec<serde_json::Value> = rows
+    Ok(rows
         .iter()
         .map(|r| {
             serde_json::json!({
@@ -327,8 +312,7 @@ pub async fn list_tiers(State(state): State<AppState>) -> Result<Response, Respo
                 "perks": perk_labels(&r.perk_json),
             })
         })
-        .collect();
-    Ok(Json(out).into_response())
+        .collect())
 }
 #[derive(Debug, Deserialize)]
 pub struct SetTierReq {
@@ -380,6 +364,11 @@ pub async fn upload_file_meta(
     Json(req): Json<UploadFileMetaReq>,
 ) -> Result<Response, Response> {
     guard_admin(&state, &headers)?;
+    // B4-06 (路径穿越): file_name 只取 basename, 拒绝含路径分隔符/../的输入, 防逃逸 uploads 目录写任意文件.
+    let safe_name = sanitize_file_name(&req.file_name);
+    if safe_name.is_empty() {
+        return Ok((StatusCode::BAD_REQUEST, "invalid file name").into_response());
+    }
     let storage_key = if let Some(content) = req.content.as_ref() {
         let base = state
             .uploads_dir
@@ -389,7 +378,7 @@ pub async fn upload_file_meta(
         tokio::fs::create_dir_all(&dir)
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("mkdir failed: {e}")).into_response())?;
-        let dest = dir.join(&req.file_name);
+        let dest = dir.join(&safe_name);
         // 优先按 base64 解码; 解码失败则按原文写入 (兼容明文上传)
         let raw = base64_decode(content.as_bytes())
             .unwrap_or_else(|| content.as_bytes().to_vec());
@@ -406,7 +395,7 @@ pub async fn upload_file_meta(
          VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",
     )
     .bind(req.product_id)
-    .bind(&req.file_name)
+    .bind(&safe_name)
     .bind(&storage_key)
     .bind(size)
     .bind(&req.mime_type)
@@ -419,6 +408,34 @@ pub async fn upload_file_meta(
         Json(serde_json::json!({ "id": id, "storageKey": storage_key })),
     )
     .into_response())
+}
+
+// B4-06 (路径穿越防护): 仅保留文件名 basename, 剔除路径分隔符、盘符、父目录标记.
+// 返回值若为空表示输入非法 (如 ".." 或纯分隔符), 调用方应拒绝.
+fn sanitize_file_name(name: &str) -> String {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    // 取最后一段 basename (兼容 '/' 与 '\\' 两种分隔符)
+    let base = trimmed
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(trimmed);
+    // 剔除控制字符与空字节, 拒绝 ".." 及盘符形式
+    let cleaned: String = base
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect();
+    let cleaned = cleaned.trim().trim_start_matches('.').to_string();
+    if cleaned.is_empty() || cleaned == "." || cleaned == ".." {
+        return String::new();
+    }
+    // 拒绝 Windows 盘符 (C:) 或剩余分隔符
+    if cleaned.contains(':') || cleaned.contains('/') || cleaned.contains('\\') {
+        return String::new();
+    }
+    cleaned
 }
 
 // 纯本地 base64 解码 (避免引入外部 crate); 不支持时返 None (调用方 fallback 原文)
@@ -511,13 +528,16 @@ pub struct FileQuery {
     product_id: Option<i64>,
 }
 
-// 真实文件下载: 校验交付物归属 (uid 非属主/无单 404 不泄露枚举), 读 storage_key 指向的本地文件,
+// 真实文件下载: 校验交付物归属 (非属主/无单 404 不泄露枚举), 读 storage_key 指向的本地文件,
 // 流式返回. 额度约束走 /user/deliveries/{id}/download (mark_downloaded), 此端点只管取文件.
 pub async fn download_file(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(id): Path<i64>,
-    Query(q): Query<UidQuery>,
 ) -> Result<Response, Response> {
+    let user_id = user_id_from_token(&state, &headers)
+        .await
+        .ok_or_else(|| (StatusCode::UNAUTHORIZED, "unauthorized").into_response())?;
     let row: Option<(i64, Option<String>, Option<String>, String)> = sqlx::query_as(
         "SELECT d.user_id, d.file_url, uf.storage_key, COALESCE(uf.file_name, d.file_name, 'delivery')
          FROM product_deliveries d LEFT JOIN uploaded_files uf ON uf.id = (
@@ -531,7 +551,7 @@ pub async fn download_file(
     let Some((owner, file_url, storage_key, _fn)) = row else {
         return Ok((StatusCode::NOT_FOUND, "delivery not found").into_response());
     };
-    if owner != user_id_by_uid(&state, &q.uid).await {
+    if owner != user_id {
         return Ok((StatusCode::NOT_FOUND, "delivery not found").into_response());
     }
     let key = file_url.or(storage_key).unwrap_or_default();
@@ -551,16 +571,6 @@ pub async fn download_file(
         .body(axum::body::Body::from(data))
         .expect("build file response");
     Ok(resp.into_response())
-}
-
-// 经 uid 查 users.id (users.uid VARCHAR UNIQUE)
-async fn user_id_by_uid(state: &AppState, uid: &str) -> i64 {
-    sqlx::query_scalar::<_, i64>("SELECT id FROM users WHERE uid = $1")
-        .bind(uid)
-        .fetch_optional(&state.pool)
-        .await
-        .map(|o| o.unwrap_or(0))
-        .unwrap_or(0)
 }
 
 fn db_err(e: sqlx::Error) -> Response {

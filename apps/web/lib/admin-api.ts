@@ -142,8 +142,9 @@ export class AdminApiError extends Error {
   }
 }
 
-export const API_BASE = "/api";
-const ADMIN_TOKEN = process.env.NEXT_PUBLIC_FORGE_ADMIN_TOKEN ?? "";
+export const API_BASE = "/api-admin";
+// 管理后台鉴权 token 仅在服务端读取 (app/api-admin/[...path]/route.ts),
+// 前端不再持有 token (修复 NEXT_PUBLIC token 泄露到浏览器 bundle 的越权风险)
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   let res: Response;
@@ -153,7 +154,6 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       cache: "no-store",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${ADMIN_TOKEN}`,
         ...(init.headers ?? {})
       }
     });
@@ -162,6 +162,9 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
   if (res.status === 401) {
     throw new AdminApiError("未授权 (401)", 401);
+  }
+  if (res.status === 503) {
+    throw new AdminApiError("管理后台未配置 (503)", 503);
   }
   if (res.status === 404) {
     throw new AdminApiError("资源不存在 (404)", 404);

@@ -18,12 +18,20 @@ export function DeliveriesView() {
   const [list, setList] = useState<Delivery[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<number | null>(null);
+  const [unauthorized, setUnauthorized] = useState(false);
 
   const load = () => {
     setErr(null);
+    setUnauthorized(false);
     fetchDeliveries()
       .then(setList)
-      .catch((e) => setErr(String(e?.message ?? e)));
+      .catch((e) => {
+        if ((e as { status?: number })?.status === 401) {
+          setUnauthorized(true);
+        } else {
+          setErr(String(e?.message ?? e));
+        }
+      });
   };
 
   useEffect(load, []);
@@ -32,9 +40,10 @@ export function DeliveriesView() {
     setBusy(d.id);
     try {
       await markDownloaded(d.id);
-      // 文件类: 有 fileUrl 时新开下载; 卡密类: 直接展示 key
-      if (d.fileUrl) {
-        window.open(`${d.fileUrl}&dl=1`, "_blank");
+      // 文件/内容类: 走真实下载端点 /api-user/files/:id (服务端代理注入会话 token,
+      // 后端校验属主并流式返回), 而非把 storage_key (local:// / s3://) 当 URL 打开.
+      if (d.deliveryType !== "card_key") {
+        window.open(`/api-user/files/${d.id}`, "_blank");
       }
       load();
     } catch (e) {
@@ -65,7 +74,19 @@ export function DeliveriesView() {
         </p>
       ) : null}
 
-      {!list ? (
+      {unauthorized ? (
+        <div className="rounded-2xl border border-zinc-800/80 bg-zinc-900/40 py-16 text-center text-sm text-zinc-400">
+          {t("loginToView")}
+          <div className="mt-3">
+            <Link
+              href={`/${locale}/auth`}
+              className="text-indigo-400 hover:text-indigo-300"
+            >
+              {t("login")} →
+            </Link>
+          </div>
+        </div>
+      ) : !list ? (
         <div className="space-y-3">
           {[0, 1, 2].map((i) => (
             <div key={i} className="forge-skeleton h-16 rounded-xl" />

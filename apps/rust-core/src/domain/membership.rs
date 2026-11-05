@@ -29,6 +29,8 @@ impl Tier {
     }
 
     // 升级只允许向更高等级 (free<plus<pro), 降级/平级走续期不走此校验
+    // (升级已改走支付流程, 此方法保留供单测与未来支付后晋升逻辑复用)
+    #[allow(dead_code)]
     pub fn can_upgrade_from(self, other: Self) -> bool {
         self < other
     }

@@ -15,6 +15,8 @@
     },
     "lockedRate": "下单时锁定汇率 (美元锚定)",
     "memberDiscount": "会员折扣",
+    "coupon": "优惠券",
+    "appliedAtCheckout": "下单时自动应用",
     "payNow": "提交支付",
     "submitting": "提交中…",
     "created": "支付请求已创建，等待网关回调校验",
@@ -25,7 +27,28 @@
     "title": "商品橱窗",
     "subtitle": "源码 / 教程 / 卡密 / 资源包 · 支付成功后自动发货",
     "buy": "立即购买",
-    "sold": "已售 {n}"
+    "sold": "已售 {n}",
+    "buyNow": "立即购买 →",
+    "favorite": "☆ 收藏",
+    "favorited": "★ 已收藏",
+    "reviews": "用户评价",
+    "questions": "问答",
+    "noReviews": "暂无评价",
+    "noQuestions": "暂无提问",
+    "reviewPlaceholder": "写下你的使用体验…",
+    "questionPlaceholder": "对商品有疑问？提问…",
+    "publish": "发表",
+    "ask": "提问",
+    "pendingAnswer": "待回复",
+    "rating": "评分",
+    "all": "全部",
+    "source": "源码",
+    "tutorial": "教程",
+    "card": "卡密",
+    "resource": "资源包",
+    "searchPlaceholder": "搜索商品…",
+    "unavailable": "商品服务不可用，请稍后重试",
+    "noMatch": "没有匹配的商品"
   },
   "email": {
     "paySuccess": "支付成功",
@@ -102,7 +125,6 @@
       "received": "实收",
       "expected": "应收",
       "file": "文件",
-      "product": "商品",
       "storage": "存储",
       "size": "大小",
       "inactive": "下架",
@@ -187,7 +209,30 @@
     "store": "商品橱窗",
     "membership": "会员中心",
     "myFiles": "我的文件",
-    "admin": "管理后台"
+    "admin": "管理后台",
+    "login": "登录",
+    "logout": "退出",
+    "notifications": "通知",
+    "markAllRead": "全部已读",
+    "noNotifications": "暂无通知",
+    "loading": "加载中…"
+  },
+  "auth": {
+    "loginTitle": "登录",
+    "registerTitle": "注册",
+    "email": "邮箱",
+    "password": "密码",
+    "login": "登录",
+    "register": "注册",
+    "noAccount": "还没有账号？注册",
+    "hasAccount": "已有账号？登录",
+    "submitLogin": "登录",
+    "submitRegister": "创建账号",
+    "submitting": "提交中…",
+    "error": "登录失败，请检查邮箱与密码",
+    "loginOk": "登录成功",
+    "registerOk": "注册成功",
+    "passwordHint": "至少 8 位"
   },
   "membership": {
     "subtitle": "升级会员解锁内容交付、专属折扣与更高下载额度。",
@@ -202,7 +247,9 @@
     "unlimited": "不限",
     "upgrade": "立即升级",
     "upgrading": "升级中…",
-    "goMyFiles": "查看我的文件与下载"
+    "goMyFiles": "查看我的文件与下载",
+    "loginToView": "登录后可查看你的会员信息与专属权益",
+    "login": "登录"
   },
   "deliveries": {
     "subtitle": "已购源码、教程、资源包与卡密，随时下载。",
@@ -211,6 +258,8 @@
     "download": "下载",
     "downloading": "准备中…",
     "downloaded": "已下载",
-    "retry": "重试"
+    "retry": "重试",
+    "loginToView": "登录后可查看你已购买的文件与卡密",
+    "login": "登录"
   }
 }

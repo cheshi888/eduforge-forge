@@ -20,7 +20,7 @@ import {
   GHOST
 } from "./ui";
 
-const GATEWAYS = ["alipay", "wechat", "stripe", "paypal", "usdt"];
+const GATEWAYS = ["alipay", "wechat", "stripe", "paypal", "cardacq", "coinbase"];
 const STATUSES = ["PENDING", "PAID", "SHIPPED", "CANCELLED", "FAILED"];
 const PAGE = 50;
 

@@ -43,6 +43,12 @@ async fn readyz(State(state): State<AppState>) -> StatusCode {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // B4-05 根治: 无论从 cargo run / 直接 exe / 脚本启动, 都自动加载 <cwd>/.env。
+    // 否则 PGlite(单 session) 下 sqlx 命名 prepared statement 会跨连接冲突
+    // ("prepared statement already exists"), 需要 statement-cache-capacity=0 + 单连接。
+    // 已存在的系统环境变量优先于 .env (dotenvy 默认不覆盖)。
+    let _ = dotenvy::dotenv();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
@@ -52,6 +58,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let cfg = config::Config::from_env()?;
+    info!(
+        db_url = %cfg.database_url,
+        db_max_conns = %std::env::var("FORGE_DB_MAX_CONNS").unwrap_or_default(),
+        "db config loaded"
+    );
     let pool = db::init(&cfg.database_url)?;
     let events = events::EventPublisher::connect(&cfg.nats_url, pool.clone()).await?;
     let events = std::sync::Arc::new(events);
@@ -96,6 +107,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(api::internal::routes())
         .merge(api::admin::routes())
         .merge(api::membership::routes())
+        .merge(api::auth::routes())
+        .merge(api::catalog::routes())
+        .merge(api::promotion::routes())
+        .merge(api::community::routes())
         .route("/healthz", axum::routing::get(|| async { "ok" }))
         .route("/readyz", axum::routing::get(readyz))
         .layer(TraceLayer::new_for_http())

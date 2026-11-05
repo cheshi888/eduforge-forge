@@ -1,10 +1,11 @@
 "use server";
 
-import { resolveUid } from "@/lib/api";
+import { getSessionToken } from "@/lib/auth";
 
 // 结算表单 Server Action: 组装下单请求, 由 Rust Core 统一落库
 // (expected_amount 在此刻锁定, 后续网关回调只做本地比对)。
-const API_BASE = "/api";
+// 服务端 fetch 必须用绝对 URL, 直接指向后端.
+const API_BASE = process.env.FORGE_API_PROXY_TARGET ?? "http://127.0.0.1:8080";
 
 export interface CheckoutState {
   ok: boolean;
@@ -27,12 +28,19 @@ export async function createOrder(
     return { ok: false, error: "missing out_trade_no" };
   }
 
+  const token = await getSessionToken();
+  if (!token) {
+    return { ok: false, error: "unauthorized" };
+  }
+
   try {
     const res = await fetch(`${API_BASE}/internal/checkout`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`
+      },
       body: JSON.stringify({
-        uid: resolveUid(),
         out_trade_no: outTradeNo,
         payment_method: paymentMethod
       }),

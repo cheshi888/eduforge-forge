@@ -6,38 +6,61 @@ export interface OrderSummary {
   currency: string;
   lockedRateUsd: string | null;
   gatewayPayload?: string;
+  // 会员折扣 (下单时后端已应用): 折前原价微单位 + 折扣率 (0 表示无折扣)
+  originalAmountMicro?: number;
+  discountPct?: number;
+  // 优惠券 (阶段3): 命中时返回券码与优惠金额微单位
+  couponCode?: string;
+  couponDiscountMicro?: number;
 }
 
-const API_BASE = "/api";
+const API_BASE = process.env.FORGE_API_PROXY_TARGET ?? "http://127.0.0.1:8080";
 
-// C-08: uid 仅由服务端环境变量解析 (FORGE_DEMO_USER, 缺省 u-demo),
-// 客户端请求头不再参与 uid 决策 (旧版 x-forge-user 头可伪造 → 越权读任意用户订单)
-export function resolveUid(): string {
-  return process.env.FORGE_DEMO_USER ?? "u-demo";
+// 购物车条目 (多商品下单)
+export interface CartItemInput {
+  sku: string;
+  quantity: number;
 }
 
-export async function fetchOrderSummary(): Promise<OrderSummary | null> {
-  const uid = resolveUid();
+// 下单创建订单 (后端按会员等级折扣 + 优惠券应用, 身份由会话 token 解析): 传购物车条目数组 + 可选优惠券码.
+// 返回 OrderSummary (含折后 amountMicro 与折前 originalAmountMicro / discountPct / couponCode).
+// 注意: 本函数仅可在服务端调用 (读取 httpOnly 会话 cookie), 客户端下单走 server action.
+export async function createOrderSummary(
+  items: CartItemInput[],
+  token: string,
+  couponCode?: string
+): Promise<OrderSummary | null> {
   try {
-    const res = await fetch(`${API_BASE}/internal/orders/preview?uid=${uid}`, {
+    const res = await fetch(`${API_BASE}/internal/orders`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify({ items, coupon_code: couponCode }),
       cache: "no-store"
     });
     if (res.ok) {
-      const data = (await res.json()) as OrderSummary;
-      return data;
+      return (await res.json()) as OrderSummary;
     }
   } catch {
-    // 后端未就绪时按开关决定是否回退 mock
+    // 下单失败交由调用方处理
   }
-  // M2-06: 生产故障显式渲染不可用, 不再静默展示演示订单号 (演示态需显式开启 FORGE_MOCK_FALLBACK=1)
-  if (process.env.FORGE_MOCK_FALLBACK !== "1") {
-    return null;
+  return null;
+}
+
+// 读取当前用户最新 PENDING 订单 (身份由会话 token 解析)
+export async function fetchOrderSummary(token: string): Promise<OrderSummary | null> {
+  try {
+    const res = await fetch(`${API_BASE}/internal/orders/preview`, {
+      headers: { Authorization: `Bearer ${token}` },
+      cache: "no-store"
+    });
+    if (res.ok) {
+      return (await res.json()) as OrderSummary;
+    }
+  } catch {
+    // 后端未就绪
   }
-  return {
-    outTradeNo: "FT-20260909-8f3a2c",
-    quantity: 3,
-    amountMicro: 3_000_000_000,
-    currency: "CNY",
-    lockedRateUsd: "0.1385"
-  };
+  return null;
 }

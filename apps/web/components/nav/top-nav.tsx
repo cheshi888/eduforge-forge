@@ -3,8 +3,9 @@
 import Link from "next/link";
 import { useLocale, useTranslations } from "next-intl";
 import { LocaleSwitcher } from "@/components/nav/locale-switcher";
+import { NotificationsMenu } from "@/components/nav/notifications-menu";
 
-export function TopNav() {
+export function TopNav({ userEmail }: { userEmail: string | null }) {
   const locale = useLocale();
   const t = useTranslations("nav");
   return (
@@ -45,6 +46,21 @@ export function TopNav() {
           >
             {t("myFiles")}
           </Link>
+          {userEmail ? (
+            <>
+              <span className="hidden max-w-[120px] truncate text-xs text-zinc-500 sm:block">
+                {userEmail}
+              </span>
+              <NotificationsMenu />
+            </>
+          ) : (
+            <Link
+              href={`/${locale}/auth`}
+              className="hidden text-xs text-zinc-400 transition hover:text-zinc-200 sm:block"
+            >
+              {t("login")}
+            </Link>
+          )}
           <Link
             href={`/${locale}/admin`}
             className="rounded-lg border border-zinc-700/80 bg-zinc-900/50 px-3 py-1.5 text-xs font-medium text-zinc-300 transition hover:border-indigo-500/50 hover:text-indigo-300 hover:shadow-[0_0_14px_rgba(99,102,241,0.25)]"

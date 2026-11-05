@@ -6,7 +6,6 @@ import Link from "next/link";
 import {
   fetchTiers,
   fetchProfile,
-  upgradeTier,
   type Tier,
   type UserTier
 } from "@/lib/membership-api";
@@ -18,30 +17,23 @@ export function MembershipView() {
   const [tiers, setTiers] = useState<Tier[]>([]);
   const [profile, setProfile] = useState<UserTier | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
 
   useEffect(() => {
-    Promise.all([fetchTiers(), fetchProfile()])
+    // 套餐列表 (fetchTiers) 是公开端点, 未登录也可查看;
+    // 个人档 (fetchProfile) 需登录, 未登录 (401) 静默降级为 null, 不报错.
+    Promise.all([
+      fetchTiers().catch(() => [] as Tier[]),
+      fetchProfile().catch((e) => {
+        if ((e as { status?: number })?.status === 401) return null;
+        throw e;
+      })
+    ])
       .then(([tiers, profile]) => {
         setTiers(tiers);
         setProfile(profile);
       })
       .catch((e) => setErr(String(e?.message ?? e)));
   }, []);
-
-  const doUpgrade = async (code: string) => {
-    setBusy(code);
-    try {
-      await upgradeTier(code);
-      setErr(null);
-      const p = await fetchProfile();
-      setProfile(p);
-    } catch (e) {
-      setErr(String((e as { message?: string })?.message ?? e));
-    } finally {
-      setBusy(null);
-    }
-  };
 
   const activeTier = tiers.find((x) => x.code === profile?.tierCode);
 
@@ -99,6 +91,18 @@ export function MembershipView() {
         </div>
       ) : null}
 
+      {!profile && !err ? (
+        <div className="mb-6 flex items-center justify-between rounded-xl border border-zinc-800/80 bg-zinc-900/40 px-4 py-3 text-sm text-zinc-400">
+          <span>{t("loginToView")}</span>
+          <Link
+            href={`/${locale}/auth`}
+            className="text-indigo-400 hover:text-indigo-300"
+          >
+            {t("login")} →
+          </Link>
+        </div>
+      ) : null}
+
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         {tiers.map((tier) => {
           const isActive = profile?.tierCode === tier.code;
@@ -148,13 +152,12 @@ export function MembershipView() {
                 ))}
               </ul>
               {isUpgradable ? (
-                <button
-                  onClick={() => doUpgrade(tier.code)}
-                  disabled={busy === tier.code}
-                  className="mt-5 w-full rounded-xl bg-gradient-to-r from-indigo-600 via-purple-600 to-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_0_18px_rgba(99,102,241,0.35)] transition hover:shadow-[0_0_26px_rgba(99,102,241,0.5)] disabled:opacity-50 disabled:shadow-none"
+                <Link
+                  href={`/${locale}?tier=${tier.code}`}
+                  className="mt-5 block w-full rounded-xl bg-gradient-to-r from-indigo-600 via-purple-600 to-indigo-600 px-4 py-2.5 text-center text-sm font-semibold text-white shadow-[0_0_18px_rgba(99,102,241,0.35)] transition hover:shadow-[0_0_26px_rgba(99,102,241,0.5)]"
                 >
-                  {busy === tier.code ? t("upgrading") : t("upgrade")}
-                </button>
+                  {t("upgrade")}
+                </Link>
               ) : null}
             </div>
           );

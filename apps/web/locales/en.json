@@ -15,6 +15,8 @@
     },
     "lockedRate": "Exchange rate locked at order time (USD-anchored)",
     "memberDiscount": "Member Discount",
+    "coupon": "Coupon",
+    "appliedAtCheckout": "Applied at checkout",
     "payNow": "Submit Payment",
     "submitting": "Submitting…",
     "created": "Payment request created, awaiting gateway callback verification",
@@ -29,7 +31,28 @@
     "title": "Storefront",
     "subtitle": "Source / Tutorials / Card keys / Resource packs - auto-delivered after payment",
     "buy": "Buy Now",
-    "sold": "{n} sold"
+    "sold": "{n} sold",
+    "buyNow": "Buy Now →",
+    "favorite": "☆ Favorite",
+    "favorited": "★ Favorited",
+    "reviews": "Reviews",
+    "questions": "Q&A",
+    "noReviews": "No reviews yet",
+    "noQuestions": "No questions yet",
+    "reviewPlaceholder": "Share your experience…",
+    "questionPlaceholder": "Have a question? Ask…",
+    "publish": "Post",
+    "ask": "Ask",
+    "pendingAnswer": "Awaiting reply",
+    "rating": "Rating",
+    "all": "All",
+    "source": "Source",
+    "tutorial": "Tutorial",
+    "card": "Card key",
+    "resource": "Resource",
+    "searchPlaceholder": "Search products…",
+    "unavailable": "Catalog service unavailable, please retry later",
+    "noMatch": "No matching products"
   },
   "admin": {
     "title": "Admin Dashboard",
@@ -105,7 +128,6 @@
       "actions": "Actions",
       "customer": "Customer UID",
       "file": "File",
-      "product": "Product",
       "storage": "Storage",
       "size": "Size",
       "inactive": "Inactive"
@@ -187,7 +209,30 @@
     "store": "Store",
     "membership": "Membership",
     "myFiles": "My Files",
-    "admin": "Admin"
+    "admin": "Admin",
+    "login": "Sign in",
+    "logout": "Sign out",
+    "notifications": "Notifications",
+    "markAllRead": "Mark all read",
+    "noNotifications": "No notifications",
+    "loading": "Loading…"
+  },
+  "auth": {
+    "loginTitle": "Sign in",
+    "registerTitle": "Sign up",
+    "email": "Email",
+    "password": "Password",
+    "login": "Sign in",
+    "register": "Sign up",
+    "noAccount": "No account? Sign up",
+    "hasAccount": "Already have an account? Sign in",
+    "submitLogin": "Sign in",
+    "submitRegister": "Create account",
+    "submitting": "Submitting…",
+    "error": "Sign-in failed, check email and password",
+    "loginOk": "Signed in",
+    "registerOk": "Account created",
+    "passwordHint": "At least 8 characters"
   },
   "membership": {
     "subtitle": "Upgrade to unlock content delivery, discounts and higher download limits.",
@@ -202,7 +247,9 @@
     "unlimited": "Unlimited",
     "upgrade": "Upgrade",
     "upgrading": "Upgrading…",
-    "goMyFiles": "My files & downloads"
+    "goMyFiles": "My files & downloads",
+    "loginToView": "Log in to view your membership and benefits",
+    "login": "Log in"
   },
   "deliveries": {
     "subtitle": "Purchased sources, tutorials, resource packs and card keys, ready to download.",
@@ -211,6 +258,8 @@
     "download": "Download",
     "downloading": "Preparing…",
     "downloaded": "Downloaded",
-    "retry": "Retry"
+    "retry": "Retry",
+    "loginToView": "Log in to view your purchased files and keys",
+    "login": "Log in"
   }
 }

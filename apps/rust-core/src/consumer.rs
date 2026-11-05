@@ -313,6 +313,34 @@ impl EventConsumer {
         .await
         .map_err(|e| e.to_string())?;
 
+        // 履约通知 (阶段4): 发货成功站内信, 与订单状态变更同事务原子落库.
+        let user_id: i64 = sqlx::query_scalar("SELECT user_id FROM orders WHERE id = $1")
+            .bind(order_id)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap_or(0);
+        let product_title: Option<String> = sqlx::query_scalar(
+            "SELECT p.title FROM orders o JOIN products p ON p.id = o.product_id WHERE o.id = $1",
+        )
+        .bind(order_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .unwrap_or(None);
+        if user_id != 0 {
+            let title = product_title
+                .map(|t| format!("订单已发货：{t}"))
+                .unwrap_or_else(|| "订单已发货".to_string());
+            let _ = sqlx::query(
+                "INSERT INTO notifications (user_id, kind, title, body)
+                 VALUES ($1, 'shipped', $2, $3)",
+            )
+            .bind(user_id)
+            .bind(&title)
+            .bind(Some(format!("订单 {out_trade_no} 已发货，请前往「我的文件」查看交付内容。")))
+            .execute(&mut *tx)
+            .await;
+        }
+
         tx.commit().await.map_err(|e| e.to_string())?;
 
         info!(
